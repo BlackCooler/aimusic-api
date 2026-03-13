@@ -7,12 +7,14 @@ const PORT = process.env.PORT || 3000;
 function uniqBy(arr, keyFn) {
   const seen = new Set();
   const out = [];
+
   for (const item of arr) {
     const key = keyFn(item);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(item);
   }
+
   return out;
 }
 
@@ -27,27 +29,64 @@ function normalizeTrack(track) {
   };
 }
 
-function looksLikeMusic(item) {
+function looksLikeBadArchiveItem(item) {
   const text = `${item.title} ${item.artist}`.toLowerCase();
 
   const badWords = [
     "podcast",
     "episode",
     "news",
-    "talk",
+    "interview",
     "audiobook",
     "sermon",
     "lecture",
-    "interview",
     "bitcoin",
     "nft",
-    "radio show"
+    "politics",
+    "freakonomics",
+    "talk",
+    "show",
+    "comedy",
+    "norm farrar",
+    "armstrong and getty",
+    "canadaland",
+    "twenty thousand hertz",
+    "mind pump",
+    "terraspaces"
   ];
 
-  return !badWords.some(word => text.includes(word));
+  return badWords.some(word => text.includes(word));
 }
 
-function looksLikeMusicRadio(item) {
+function looksLikeGoodArchiveItem(item) {
+  const text = `${item.title} ${item.artist}`.toLowerCase();
+
+  const goodWords = [
+    "mix",
+    "dj",
+    "house",
+    "techno",
+    "trance",
+    "edm",
+    "music",
+    "jazz",
+    "chill",
+    "ambient",
+    "psychill",
+    "drum",
+    "bass",
+    "dance",
+    "remix",
+    "set",
+    "radio edit",
+    "vol",
+    "album"
+  ];
+
+  return goodWords.some(word => text.includes(word));
+}
+
+function looksLikeGoodRadio(item) {
   const text = `${item.title} ${item.artist}`.toLowerCase();
 
   const goodWords = [
@@ -58,15 +97,33 @@ function looksLikeMusicRadio(item) {
     "dance",
     "house",
     "hits",
-    "fm",
-    "radio disney",
     "smooth jazz",
-    "fonógrafo",
+    "disney",
     "los40",
-    "stereorey"
+    "stereorey",
+    "fonógrafo",
+    "beat",
+    "mix",
+    "oye",
+    "exa",
+    "joya",
+    "piano"
   ];
 
-  return goodWords.some(word => text.includes(word));
+  const badWords = [
+    "noticias",
+    "news",
+    "formula",
+    "conversación",
+    "talk",
+    "heraldo",
+    "traffic"
+  ];
+
+  const hasGood = goodWords.some(word => text.includes(word));
+  const hasBad = badWords.some(word => text.includes(word));
+
+  return hasGood && !hasBad;
 }
 
 async function safeRun(label, fn) {
@@ -79,7 +136,7 @@ async function safeRun(label, fn) {
   }
 }
 
-async function getAudius(limit = 60) {
+async function getAudiusTrending(limit = 60) {
   const url = `https://discoveryprovider.audius.co/v1/tracks/trending?limit=${limit}`;
   const res = await fetch(url);
   const json = await res.json();
@@ -97,8 +154,11 @@ async function getAudius(limit = 60) {
   );
 }
 
-async function searchAudius(q, limit = 60) {
-  const url = `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&limit=${limit}`;
+async function searchAudius(query, limit = 60) {
+  const url =
+    `https://discoveryprovider.audius.co/v1/tracks/search` +
+    `?query=${encodeURIComponent(query)}&limit=${limit}`;
+
   const res = await fetch(url);
   const json = await res.json();
   const data = Array.isArray(json.data) ? json.data : [];
@@ -115,8 +175,11 @@ async function searchAudius(q, limit = 60) {
   );
 }
 
-async function getArchiveMusic(limit = 50, query = "music") {
-  const q = `${query} AND mediatype:audio`;
+async function getArchiveMusic(limit = 40, query = "music") {
+  const q =
+    `(${query}) AND mediatype:audio ` +
+    `AND (title:music OR title:mix OR title:dj OR title:house OR title:techno OR subject:music OR subject:mix OR subject:dj)`;
+
   const url =
     `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}` +
     `&fl[]=identifier&fl[]=title&fl[]=creator&rows=${limit}&output=json`;
@@ -136,36 +199,46 @@ async function getArchiveMusic(limit = 50, query = "music") {
         source: "archive"
       })
     )
-    .filter(looksLikeMusic);
+    .filter(item => !looksLikeBadArchiveItem(item))
+    .filter(looksLikeGoodArchiveItem);
 }
 
-async function getOpenverseAudio(limit = 40, query = "music") {
-  const url = `https://api.openverse.org/v1/audio/?q=${encodeURIComponent(query)}&page_size=${limit}`;
+async function getOpenverseAudio(limit = 35, query = "music") {
+  const url =
+    `https://api.openverse.org/v1/audio/` +
+    `?q=${encodeURIComponent(query)}&page_size=${limit}`;
+
   const res = await fetch(url, {
-    headers: { "User-Agent": "AIMusic/1.0" }
+    headers: {
+      "User-Agent": "AIMusic/1.0"
+    }
   });
+
   const json = await res.json();
   const results = Array.isArray(json.results) ? json.results : [];
 
-  return results
-    .map(t =>
-      normalizeTrack({
-        id: `openverse_${t.id}`,
-        title: t.title || "Unknown",
-        artist: t.creator || "Unknown",
-        stream: t.url || "",
-        cover: t.thumbnail || "",
-        source: "openverse"
-      })
-    )
-    .filter(looksLikeMusic);
+  return results.map(t =>
+    normalizeTrack({
+      id: `openverse_${t.id}`,
+      title: t.title || "Unknown",
+      artist: t.creator || "Unknown",
+      stream: t.url || "",
+      cover: t.thumbnail || "",
+      source: "openverse"
+    })
+  );
 }
 
-async function getRadioMusic(limit = 40, tag = "music") {
-  const url = `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(tag)}`;
+async function getRadioMusic(limit = 30, tag = "music") {
+  const url =
+    `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(tag)}`;
+
   const res = await fetch(url, {
-    headers: { "User-Agent": "AIMusic/1.0" }
+    headers: {
+      "User-Agent": "AIMusic/1.0"
+    }
   });
+
   const json = await res.json();
   const rows = Array.isArray(json) ? json.slice(0, limit) : [];
 
@@ -180,14 +253,14 @@ async function getRadioMusic(limit = 40, tag = "music") {
         source: "radio"
       })
     )
-    .filter(looksLikeMusicRadio);
+    .filter(looksLikeGoodRadio);
 }
 
 async function getTrendingAll() {
   const [audius, archive, openverse, radio] = await Promise.all([
-    safeRun("audius", () => getAudius(60)),
+    safeRun("audius", () => getAudiusTrending(60)),
     safeRun("archive", () => getArchiveMusic(35, "music")),
-    safeRun("openverse", () => getOpenverseAudio(30, "music")),
+    safeRun("openverse", () => getOpenverseAudio(35, "music")),
     safeRun("radio", () => getRadioMusic(30, "music"))
   ]);
 
@@ -197,14 +270,14 @@ async function getTrendingAll() {
   );
 }
 
-async function searchAll(q) {
-  const query = q && q.trim() ? q.trim() : "music";
+async function searchAll(query) {
+  const q = query && query.trim() ? query.trim() : "music";
 
   const [audius, archive, openverse, radio] = await Promise.all([
-    safeRun("audius", () => searchAudius(query, 60)),
-    safeRun("archive", () => getArchiveMusic(35, query)),
-    safeRun("openverse", () => getOpenverseAudio(30, query)),
-    safeRun("radio", () => getRadioMusic(30, query))
+    safeRun("audius", () => searchAudius(q, 60)),
+    safeRun("archive", () => getArchiveMusic(35, q)),
+    safeRun("openverse", () => getOpenverseAudio(35, q)),
+    safeRun("radio", () => getRadioMusic(30, q))
   ]);
 
   return uniqBy(
@@ -219,6 +292,7 @@ app.get("/", (req, res) => {
 
 app.get("/api/trending", async (req, res) => {
   const tracks = await getTrendingAll();
+
   res.json({
     total: tracks.length,
     sources_active: [...new Set(tracks.map(t => t.source))],
@@ -228,6 +302,7 @@ app.get("/api/trending", async (req, res) => {
 
 app.get("/api/new", async (req, res) => {
   const tracks = await searchAll("new music");
+
   res.json({
     total: tracks.length,
     sources_active: [...new Set(tracks.map(t => t.source))],
@@ -243,6 +318,7 @@ app.get("/api/search", async (req, res) => {
   }
 
   const tracks = await searchAll(q);
+
   res.json({
     query: q,
     total: tracks.length,
