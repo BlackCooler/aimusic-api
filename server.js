@@ -1,115 +1,144 @@
-const express = require("express");
-const fetch = require("node-fetch");
+const express = require("express")
+const fetch = require("node-fetch")
 
-const app = express();
+const app = express()
 
-async function getAudius() {
-  const res = await fetch(
+function normalize(track){
+  return {
+    id: track.id || "",
+    title: track.title || track.name || "Unknown",
+    artist: track.artist || track.creator || "Unknown",
+    stream: track.stream || "",
+    cover: track.cover || "",
+    source: track.source || "unknown"
+  }
+}
+
+async function audius(){
+
+  const r = await fetch(
     "https://discoveryprovider.audius.co/v1/tracks/trending?limit=100"
-  );
-  const data = await res.json();
+  )
 
-  return data.data.map(t => ({
+  const j = await r.json()
+
+  return j.data.map(t => normalize({
     id: "audius_" + t.id,
     title: t.title,
     artist: t.user.name,
     stream: `https://discoveryprovider.audius.co/v1/tracks/${t.id}/stream`,
     cover: t.artwork ? t.artwork["480x480"] : "",
     source: "audius"
-  }));
+  }))
+
 }
 
-async function getJamendo() {
-  const res = await fetch(
-    "https://api.jamendo.com/v3.0/tracks/?client_id=demo&limit=100"
-  );
-  const data = await res.json();
+async function jamendo(){
 
-  return data.results.map(t => ({
+  const r = await fetch(
+    "https://api.jamendo.com/v3.0/tracks/?client_id=demo&limit=100"
+  )
+
+  const j = await r.json()
+
+  return j.results.map(t => normalize({
     id: "jamendo_" + t.id,
     title: t.name,
     artist: t.artist_name,
     stream: t.audio,
     cover: t.album_image,
     source: "jamendo"
-  }));
+  }))
+
 }
 
-async function getArchive() {
-  const res = await fetch(
-    "https://archive.org/advancedsearch.php?q=mediatype:audio AND subject:music&rows=100&output=json"
-  );
-  const data = await res.json();
+async function archive(){
 
-  return data.response.docs.map(t => ({
+  const r = await fetch(
+    "https://archive.org/advancedsearch.php?q=subject:music AND mediatype:audio&rows=100&output=json"
+  )
+
+  const j = await r.json()
+
+  return j.response.docs.map(t => normalize({
     id: "archive_" + t.identifier,
-    title: t.title || "Unknown",
-    artist: t.creator || "Unknown",
+    title: t.title,
+    artist: t.creator,
     stream: `https://archive.org/download/${t.identifier}`,
     cover: "",
     source: "archive"
-  }));
+  }))
+
 }
 
-async function getPixabay() {
-  const res = await fetch(
-    "https://pixabay.com/api/music/?key=31269580-7c7a2c2e1a1c7a7d4e9bfa3e8"
-  );
-  const data = await res.json();
+async function pixabay(){
 
-  return data.hits.map(t => ({
+  const r = await fetch(
+    "https://pixabay.com/api/music/?key=31269580-7c7a2c2e1a1c7a7d4e9bfa3e8"
+  )
+
+  const j = await r.json()
+
+  return j.hits.map(t => normalize({
     id: "pixabay_" + t.id,
     title: t.tags,
     artist: t.user,
     stream: t.audio,
     cover: "",
     source: "pixabay"
-  }));
+  }))
+
 }
 
-async function getRadio() {
-  const res = await fetch(
-    "https://de1.api.radio-browser.info/json/stations/bytag/music"
-  );
-  const data = await res.json();
+async function radio(){
 
-  return data.slice(0, 100).map(t => ({
+  const r = await fetch(
+    "https://de1.api.radio-browser.info/json/stations/bytag/music"
+  )
+
+  const j = await r.json()
+
+  return j.slice(0,100).map(t => normalize({
     id: "radio_" + t.stationuuid,
     title: t.name,
     artist: t.country,
     stream: t.url,
     cover: t.favicon,
     source: "radio"
-  }));
+  }))
+
 }
 
-app.get("/api/trending", async (req, res) => {
-  try {
+app.get("/api/trending", async (req,res)=>{
 
-    const audius = await getAudius();
-    const jamendo = await getJamendo();
-    const archive = await getArchive();
-    const pixabay = await getPixabay();
-    const radio = await getRadio();
+  try{
 
-    const tracks = [
-      ...audius,
-      ...jamendo,
-      ...archive,
-      ...pixabay,
-      ...radio
-    ];
+    const results = await Promise.all([
+      audius(),
+      jamendo(),
+      archive(),
+      pixabay(),
+      radio()
+    ])
 
-    res.json({ tracks });
+    const tracks = results.flat()
 
-  } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: "server error" });
+    res.json({tracks})
+
+  }catch(e){
+
+    console.log(e)
+
+    res.status(500).json({
+      error:"server error"
+    })
+
   }
-});
 
-const PORT = process.env.PORT || 3000;
+})
 
-app.listen(PORT, () => {
-  console.log("AIMusic API running on port " + PORT);
-});
+const PORT = process.env.PORT || 3000
+
+app.listen(PORT,()=>{
+  console.log("AIMusic API running")
+})
