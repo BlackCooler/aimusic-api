@@ -2,22 +2,17 @@ const express = require("express");
 const fetch = require("node-fetch");
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
-const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
-const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
 
-function uniqBy(list, keyFn) {
+function uniqBy(arr, keyFn) {
   const seen = new Set();
   const out = [];
-
-  for (const item of list) {
+  for (const item of arr) {
     const key = keyFn(item);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(item);
   }
-
   return out;
 }
 
@@ -38,16 +33,40 @@ function looksLikeMusic(item) {
   const badWords = [
     "podcast",
     "episode",
-    "sermon",
     "news",
     "talk",
-    "radio show",
     "audiobook",
+    "sermon",
     "lecture",
-    "homily"
+    "interview",
+    "bitcoin",
+    "nft",
+    "radio show"
   ];
 
   return !badWords.some(word => text.includes(word));
+}
+
+function looksLikeMusicRadio(item) {
+  const text = `${item.title} ${item.artist}`.toLowerCase();
+
+  const goodWords = [
+    "music",
+    "pop",
+    "rock",
+    "jazz",
+    "dance",
+    "house",
+    "hits",
+    "fm",
+    "radio disney",
+    "smooth jazz",
+    "fonógrafo",
+    "los40",
+    "stereorey"
+  ];
+
+  return goodWords.some(word => text.includes(word));
 }
 
 async function safeRun(label, fn) {
@@ -60,11 +79,10 @@ async function safeRun(label, fn) {
   }
 }
 
-async function getAudiusTrending(limit = 50) {
+async function getAudius(limit = 60) {
   const url = `https://discoveryprovider.audius.co/v1/tracks/trending?limit=${limit}`;
   const res = await fetch(url);
   const json = await res.json();
-
   const data = Array.isArray(json.data) ? json.data : [];
 
   return data.map(t =>
@@ -79,11 +97,10 @@ async function getAudiusTrending(limit = 50) {
   );
 }
 
-async function searchAudius(q, limit = 50) {
+async function searchAudius(q, limit = 60) {
   const url = `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&limit=${limit}`;
   const res = await fetch(url);
   const json = await res.json();
-
   const data = Array.isArray(json.data) ? json.data : [];
 
   return data.map(t =>
@@ -99,10 +116,10 @@ async function searchAudius(q, limit = 50) {
 }
 
 async function getArchiveMusic(limit = 50, query = "music") {
-  const search = `${query} AND mediatype:audio`;
+  const q = `${query} AND mediatype:audio`;
   const url =
-    `https://archive.org/advancedsearch.php?q=${encodeURIComponent(search)}` +
-    `&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=subject&rows=${limit}&output=json`;
+    `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}` +
+    `&fl[]=identifier&fl[]=title&fl[]=creator&rows=${limit}&output=json`;
 
   const res = await fetch(url);
   const json = await res.json();
@@ -122,117 +139,60 @@ async function getArchiveMusic(limit = 50, query = "music") {
     .filter(looksLikeMusic);
 }
 
-async function getOpenverseAudio(limit = 50, query = "music") {
+async function getOpenverseAudio(limit = 40, query = "music") {
   const url = `https://api.openverse.org/v1/audio/?q=${encodeURIComponent(query)}&page_size=${limit}`;
   const res = await fetch(url, {
-    headers: {
-      "User-Agent": "AIMusic/1.0"
-    }
+    headers: { "User-Agent": "AIMusic/1.0" }
   });
   const json = await res.json();
   const results = Array.isArray(json.results) ? json.results : [];
 
-  return results.map(t =>
-    normalizeTrack({
-      id: `openverse_${t.id}`,
-      title: t.title || t.foreign_landing_url || "Unknown",
-      artist: t.creator || "Unknown",
-      stream: t.url || "",
-      cover: t.thumbnail || "",
-      source: "openverse"
-    })
-  );
+  return results
+    .map(t =>
+      normalizeTrack({
+        id: `openverse_${t.id}`,
+        title: t.title || "Unknown",
+        artist: t.creator || "Unknown",
+        stream: t.url || "",
+        cover: t.thumbnail || "",
+        source: "openverse"
+      })
+    )
+    .filter(looksLikeMusic);
 }
 
-async function getRadioMusic(limit = 50, tag = "music") {
+async function getRadioMusic(limit = 40, tag = "music") {
   const url = `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(tag)}`;
   const res = await fetch(url, {
-    headers: {
-      "User-Agent": "AIMusic/1.0"
-    }
+    headers: { "User-Agent": "AIMusic/1.0" }
   });
   const json = await res.json();
   const rows = Array.isArray(json) ? json.slice(0, limit) : [];
 
-  return rows.map(t =>
-    normalizeTrack({
-      id: `radio_${t.stationuuid}`,
-      title: t.name || "Radio station",
-      artist: t.country || t.state || "Radio",
-      stream: t.url_resolved || t.url || "",
-      cover: t.favicon || "",
-      source: "radio"
-    })
-  );
-}
-
-async function getJamendo(limit = 50, query = "") {
-  if (!JAMENDO_CLIENT_ID) return [];
-
-  const base = "https://api.jamendo.com/v3.0/tracks/";
-  const params = new URLSearchParams({
-    client_id: JAMENDO_CLIENT_ID,
-    limit: String(limit),
-    format: "json",
-    include: "musicinfo"
-  });
-
-  if (query) {
-    params.set("search", query);
-  }
-
-  const res = await fetch(`${base}?${params.toString()}`);
-  const json = await res.json();
-  const results = Array.isArray(json.results) ? json.results : [];
-
-  return results.map(t =>
-    normalizeTrack({
-      id: `jamendo_${t.id}`,
-      title: t.name || "Unknown",
-      artist: t.artist_name || "Unknown",
-      stream: t.audio || "",
-      cover: t.album_image || "",
-      source: "jamendo"
-    })
-  );
-}
-
-async function getPixabayMusic(limit = 50, query = "music") {
-  if (!PIXABAY_API_KEY) return [];
-
-  const url =
-    `https://pixabay.com/api/music/?key=${encodeURIComponent(PIXABAY_API_KEY)}` +
-    `&q=${encodeURIComponent(query)}&per_page=${limit}`;
-
-  const res = await fetch(url);
-  const json = await res.json();
-  const hits = Array.isArray(json.hits) ? json.hits : [];
-
-  return hits.map(t =>
-    normalizeTrack({
-      id: `pixabay_${t.id}`,
-      title: t.tags || "Pixabay Track",
-      artist: t.user || "Pixabay",
-      stream: t.audio || "",
-      cover: "",
-      source: "pixabay"
-    })
-  );
+  return rows
+    .map(t =>
+      normalizeTrack({
+        id: `radio_${t.stationuuid}`,
+        title: t.name || "Radio",
+        artist: t.country || "Radio",
+        stream: t.url_resolved || t.url || "",
+        cover: t.favicon || "",
+        source: "radio"
+      })
+    )
+    .filter(looksLikeMusicRadio);
 }
 
 async function getTrendingAll() {
-  const [audius, archive, openverse, radio, jamendo, pixabay] = await Promise.all([
-    safeRun("audius", () => getAudiusTrending(60)),
-    safeRun("archive", () => getArchiveMusic(40, "music")),
-    safeRun("openverse", () => getOpenverseAudio(40, "music")),
-    safeRun("radio", () => getRadioMusic(40, "music")),
-    safeRun("jamendo", () => getJamendo(40)),
-    safeRun("pixabay", () => getPixabayMusic(40, "music"))
+  const [audius, archive, openverse, radio] = await Promise.all([
+    safeRun("audius", () => getAudius(60)),
+    safeRun("archive", () => getArchiveMusic(35, "music")),
+    safeRun("openverse", () => getOpenverseAudio(30, "music")),
+    safeRun("radio", () => getRadioMusic(30, "music"))
   ]);
 
   return uniqBy(
-    [...audius, ...archive, ...openverse, ...radio, ...jamendo, ...pixabay]
-      .filter(t => t.stream),
+    [...audius, ...archive, ...openverse, ...radio].filter(t => t.stream),
     t => `${t.title.toLowerCase()}__${t.artist.toLowerCase()}__${t.source}`
   );
 }
@@ -240,18 +200,15 @@ async function getTrendingAll() {
 async function searchAll(q) {
   const query = q && q.trim() ? q.trim() : "music";
 
-  const [audius, archive, openverse, radio, jamendo, pixabay] = await Promise.all([
-    safeRun("audius", () => searchAudius(query, 50)),
-    safeRun("archive", () => getArchiveMusic(30, query)),
+  const [audius, archive, openverse, radio] = await Promise.all([
+    safeRun("audius", () => searchAudius(query, 60)),
+    safeRun("archive", () => getArchiveMusic(35, query)),
     safeRun("openverse", () => getOpenverseAudio(30, query)),
-    safeRun("radio", () => getRadioMusic(30, query)),
-    safeRun("jamendo", () => getJamendo(30, query)),
-    safeRun("pixabay", () => getPixabayMusic(30, query))
+    safeRun("radio", () => getRadioMusic(30, query))
   ]);
 
   return uniqBy(
-    [...audius, ...archive, ...openverse, ...radio, ...jamendo, ...pixabay]
-      .filter(t => t.stream),
+    [...audius, ...archive, ...openverse, ...radio].filter(t => t.stream),
     t => `${t.title.toLowerCase()}__${t.artist.toLowerCase()}__${t.source}`
   );
 }
@@ -264,7 +221,7 @@ app.get("/api/trending", async (req, res) => {
   const tracks = await getTrendingAll();
   res.json({
     total: tracks.length,
-    sources_active: uniqBy(tracks.map(t => ({ source: t.source })), x => x.source).map(x => x.source),
+    sources_active: [...new Set(tracks.map(t => t.source))],
     tracks
   });
 });
@@ -273,6 +230,7 @@ app.get("/api/new", async (req, res) => {
   const tracks = await searchAll("new music");
   res.json({
     total: tracks.length,
+    sources_active: [...new Set(tracks.map(t => t.source))],
     tracks
   });
 });
@@ -288,6 +246,7 @@ app.get("/api/search", async (req, res) => {
   res.json({
     query: q,
     total: tracks.length,
+    sources_active: [...new Set(tracks.map(t => t.source))],
     tracks
   });
 });
