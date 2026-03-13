@@ -37,7 +37,7 @@ async function getJamendo() {
 
 async function getArchive() {
   const res = await fetch(
-    "https://archive.org/advancedsearch.php?q=mediatype:audio AND collection:opensource_audio&rows=100&output=json"
+    "https://archive.org/advancedsearch.php?q=mediatype:audio AND subject:music&rows=100&output=json"
   );
   const data = await res.json();
 
@@ -51,17 +51,53 @@ async function getArchive() {
   }));
 }
 
+async function getPixabay() {
+  const res = await fetch(
+    "https://pixabay.com/api/music/?key=31269580-7c7a2c2e1a1c7a7d4e9bfa3e8"
+  );
+  const data = await res.json();
+
+  return data.hits.map(t => ({
+    id: "pixabay_" + t.id,
+    title: t.tags,
+    artist: t.user,
+    stream: t.audio,
+    cover: "",
+    source: "pixabay"
+  }));
+}
+
+async function getRadio() {
+  const res = await fetch(
+    "https://de1.api.radio-browser.info/json/stations/bytag/music"
+  );
+  const data = await res.json();
+
+  return data.slice(0, 100).map(t => ({
+    id: "radio_" + t.stationuuid,
+    title: t.name,
+    artist: t.country,
+    stream: t.url,
+    cover: t.favicon,
+    source: "radio"
+  }));
+}
+
 app.get("/api/trending", async (req, res) => {
   try {
 
     const audius = await getAudius();
     const jamendo = await getJamendo();
     const archive = await getArchive();
+    const pixabay = await getPixabay();
+    const radio = await getRadio();
 
     const tracks = [
       ...audius,
       ...jamendo,
-      ...archive
+      ...archive,
+      ...pixabay,
+      ...radio
     ];
 
     res.json({ tracks });
