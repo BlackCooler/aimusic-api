@@ -18,6 +18,11 @@ function uniqBy(arr, keyFn) {
   return out;
 }
 
+function parseNumber(value, fallback) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function normalizeTrack(track) {
   return {
     id: String(track.id || ""),
@@ -27,6 +32,10 @@ function normalizeTrack(track) {
     cover: String(track.cover || ""),
     source: String(track.source || "unknown")
   };
+}
+
+function slicePage(items, offset, limit) {
+  return items.slice(offset, offset + limit);
 }
 
 function looksLikeBadArchiveItem(item) {
@@ -45,14 +54,13 @@ function looksLikeBadArchiveItem(item) {
     "politics",
     "freakonomics",
     "talk",
-    "show",
     "comedy",
-    "norm farrar",
     "armstrong and getty",
-    "canadaland",
-    "twenty thousand hertz",
     "mind pump",
-    "terraspaces"
+    "terraspaces",
+    "a really good cry",
+    "my daughter is a communist",
+    "twenty thousand hertz"
   ];
 
   return badWords.some(word => text.includes(word));
@@ -80,7 +88,8 @@ function looksLikeGoodArchiveItem(item) {
     "set",
     "radio edit",
     "vol",
-    "album"
+    "album",
+    "exclusive guest mix"
   ];
 
   return goodWords.some(word => text.includes(word));
@@ -107,7 +116,8 @@ function looksLikeGoodRadio(item) {
     "oye",
     "exa",
     "joya",
-    "piano"
+    "piano",
+    "radio disney"
   ];
 
   const badWords = [
@@ -116,7 +126,6 @@ function looksLikeGoodRadio(item) {
     "formula",
     "conversación",
     "talk",
-    "heraldo",
     "traffic"
   ];
 
@@ -136,9 +145,10 @@ async function safeRun(label, fn) {
   }
 }
 
-async function getAudiusTrending(limit = 60) {
-  const url = `https://discoveryprovider.audius.co/v1/tracks/trending?limit=${limit}`;
-  const res = await fetch(url);
+async function getAudiusTrending() {
+  const res = await fetch(
+    "https://discoveryprovider.audius.co/v1/tracks/trending?limit=100"
+  );
   const json = await res.json();
   const data = Array.isArray(json.data) ? json.data : [];
 
@@ -154,12 +164,10 @@ async function getAudiusTrending(limit = 60) {
   );
 }
 
-async function searchAudius(query, limit = 60) {
-  const url =
-    `https://discoveryprovider.audius.co/v1/tracks/search` +
-    `?query=${encodeURIComponent(query)}&limit=${limit}`;
-
-  const res = await fetch(url);
+async function searchAudius(query) {
+  const res = await fetch(
+    `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(query)}&limit=100`
+  );
   const json = await res.json();
   const data = Array.isArray(json.data) ? json.data : [];
 
@@ -175,16 +183,15 @@ async function searchAudius(query, limit = 60) {
   );
 }
 
-async function getArchiveMusic(limit = 40, query = "music") {
+async function getArchiveMusic(query = "music") {
   const q =
     `(${query}) AND mediatype:audio ` +
     `AND (title:music OR title:mix OR title:dj OR title:house OR title:techno OR subject:music OR subject:mix OR subject:dj)`;
 
-  const url =
-    `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}` +
-    `&fl[]=identifier&fl[]=title&fl[]=creator&rows=${limit}&output=json`;
+  const res = await fetch(
+    `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}&fl[]=identifier&fl[]=title&fl[]=creator&rows=80&output=json`
+  );
 
-  const res = await fetch(url);
   const json = await res.json();
   const docs = json?.response?.docs || [];
 
@@ -203,44 +210,18 @@ async function getArchiveMusic(limit = 40, query = "music") {
     .filter(looksLikeGoodArchiveItem);
 }
 
-async function getOpenverseAudio(limit = 35, query = "music") {
-  const url =
-    `https://api.openverse.org/v1/audio/` +
-    `?q=${encodeURIComponent(query)}&page_size=${limit}`;
-
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "AIMusic/1.0"
+async function getRadioMusic() {
+  const res = await fetch(
+    "https://de1.api.radio-browser.info/json/stations/bytag/music",
+    {
+      headers: {
+        "User-Agent": "AIMusic/1.0"
+      }
     }
-  });
-
-  const json = await res.json();
-  const results = Array.isArray(json.results) ? json.results : [];
-
-  return results.map(t =>
-    normalizeTrack({
-      id: `openverse_${t.id}`,
-      title: t.title || "Unknown",
-      artist: t.creator || "Unknown",
-      stream: t.url || "",
-      cover: t.thumbnail || "",
-      source: "openverse"
-    })
   );
-}
-
-async function getRadioMusic(limit = 30, tag = "music") {
-  const url =
-    `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(tag)}`;
-
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "AIMusic/1.0"
-    }
-  });
 
   const json = await res.json();
-  const rows = Array.isArray(json) ? json.slice(0, limit) : [];
+  const rows = Array.isArray(json) ? json.slice(0, 100) : [];
 
   return rows
     .map(t =>
@@ -256,32 +237,30 @@ async function getRadioMusic(limit = 30, tag = "music") {
     .filter(looksLikeGoodRadio);
 }
 
-async function getTrendingAll() {
-  const [audius, archive, openverse, radio] = await Promise.all([
-    safeRun("audius", () => getAudiusTrending(60)),
-    safeRun("archive", () => getArchiveMusic(35, "music")),
-    safeRun("openverse", () => getOpenverseAudio(35, "music")),
-    safeRun("radio", () => getRadioMusic(30, "music"))
+async function buildTrendingPool() {
+  const [audius, archive, radio] = await Promise.all([
+    safeRun("audius", () => getAudiusTrending()),
+    safeRun("archive", () => getArchiveMusic("music")),
+    safeRun("radio", () => getRadioMusic())
   ]);
 
   return uniqBy(
-    [...audius, ...archive, ...openverse, ...radio].filter(t => t.stream),
+    [...audius, ...archive, ...radio].filter(t => t.stream),
     t => `${t.title.toLowerCase()}__${t.artist.toLowerCase()}__${t.source}`
   );
 }
 
-async function searchAll(query) {
+async function buildSearchPool(query) {
   const q = query && query.trim() ? query.trim() : "music";
 
-  const [audius, archive, openverse, radio] = await Promise.all([
-    safeRun("audius", () => searchAudius(q, 60)),
-    safeRun("archive", () => getArchiveMusic(35, q)),
-    safeRun("openverse", () => getOpenverseAudio(35, q)),
-    safeRun("radio", () => getRadioMusic(30, q))
+  const [audius, archive, radio] = await Promise.all([
+    safeRun("audius", () => searchAudius(q)),
+    safeRun("archive", () => getArchiveMusic(q)),
+    safeRun("radio", () => getRadioMusic())
   ]);
 
   return uniqBy(
-    [...audius, ...archive, ...openverse, ...radio].filter(t => t.stream),
+    [...audius, ...archive, ...radio].filter(t => t.stream),
     t => `${t.title.toLowerCase()}__${t.artist.toLowerCase()}__${t.source}`
   );
 }
@@ -291,38 +270,61 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/trending", async (req, res) => {
-  const tracks = await getTrendingAll();
+  const offset = parseNumber(req.query.offset, 0);
+  const limit = Math.min(parseNumber(req.query.limit, 50), 100);
+
+  const allTracks = await buildTrendingPool();
+  const tracks = slicePage(allTracks, offset, limit);
 
   res.json({
-    total: tracks.length,
-    sources_active: [...new Set(tracks.map(t => t.source))],
+    total_pool: allTracks.length,
+    total_returned: tracks.length,
+    offset,
+    limit,
+    next_offset: offset + tracks.length < allTracks.length ? offset + tracks.length : null,
+    sources_active: [...new Set(allTracks.map(t => t.source))],
     tracks
   });
 });
 
 app.get("/api/new", async (req, res) => {
-  const tracks = await searchAll("new music");
+  const offset = parseNumber(req.query.offset, 0);
+  const limit = Math.min(parseNumber(req.query.limit, 50), 100);
+
+  const allTracks = await buildSearchPool("new music");
+  const tracks = slicePage(allTracks, offset, limit);
 
   res.json({
-    total: tracks.length,
-    sources_active: [...new Set(tracks.map(t => t.source))],
+    total_pool: allTracks.length,
+    total_returned: tracks.length,
+    offset,
+    limit,
+    next_offset: offset + tracks.length < allTracks.length ? offset + tracks.length : null,
+    sources_active: [...new Set(allTracks.map(t => t.source))],
     tracks
   });
 });
 
 app.get("/api/search", async (req, res) => {
   const q = String(req.query.q || "").trim();
+  const offset = parseNumber(req.query.offset, 0);
+  const limit = Math.min(parseNumber(req.query.limit, 50), 100);
 
   if (!q) {
     return res.status(400).json({ error: "query q is required" });
   }
 
-  const tracks = await searchAll(q);
+  const allTracks = await buildSearchPool(q);
+  const tracks = slicePage(allTracks, offset, limit);
 
   res.json({
     query: q,
-    total: tracks.length,
-    sources_active: [...new Set(tracks.map(t => t.source))],
+    total_pool: allTracks.length,
+    total_returned: tracks.length,
+    offset,
+    limit,
+    next_offset: offset + tracks.length < allTracks.length ? offset + tracks.length : null,
+    sources_active: [...new Set(allTracks.map(t => t.source))],
     tracks
   });
 });
