@@ -8,16 +8,16 @@ app.get("/api/trending", async (req, res) => {
 
     // ===== Audius =====
     const audiusRes = await fetch(
-      "https://discoveryprovider.audius.co/v1/tracks/trending"
+      "https://discoveryprovider.audius.co/v1/tracks/trending?limit=20"
     );
     const audiusData = await audiusRes.json();
 
     const audiusTracks = audiusData.data.map(t => ({
-      id: t.id,
+      id: "audius_" + t.id,
       title: t.title,
       artist: t.user.name,
-      stream: t.stream_url,
-      cover: t.artwork["480x480"],
+      stream: `https://discoveryprovider.audius.co/v1/tracks/${t.id}/stream`,
+      cover: t.artwork ? t.artwork["480x480"] : "",
       source: "audius"
     }));
 
@@ -29,7 +29,7 @@ app.get("/api/trending", async (req, res) => {
     const jamendoData = await jamendoRes.json();
 
     const jamendoTracks = jamendoData.results.map(t => ({
-      id: t.id,
+      id: "jamendo_" + t.id,
       title: t.name,
       artist: t.artist_name,
       stream: t.audio,
@@ -38,17 +38,17 @@ app.get("/api/trending", async (req, res) => {
     }));
 
 
-    // ===== Archive.org =====
+    // ===== Archive =====
     const archiveRes = await fetch(
-      "https://archive.org/advancedsearch.php?q=mediatype:audio&output=json&rows=20"
+      "https://archive.org/advancedsearch.php?q=mediatype:audio&rows=20&output=json"
     );
     const archiveData = await archiveRes.json();
 
     const archiveTracks = archiveData.response.docs.map(t => ({
-      id: t.identifier,
+      id: "archive_" + t.identifier,
       title: t.title || "Unknown",
       artist: t.creator || "Unknown",
-      stream: "https://archive.org/download/" + t.identifier,
+      stream: `https://archive.org/download/${t.identifier}`,
       cover: "",
       source: "archive"
     }));
@@ -64,6 +64,7 @@ app.get("/api/trending", async (req, res) => {
     res.json({ tracks });
 
   } catch (err) {
+    console.log(err);
     res.status(500).json({ error: "server error" });
   }
 });
