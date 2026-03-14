@@ -162,15 +162,6 @@ function safeString(value, max = 1000) {
   return String(value).trim().slice(0, max);
 }
 
-function pickFirst(...values) {
-  for (const value of values) {
-    if (value !== undefined && value !== null && String(value).trim() !== "") {
-      return value;
-    }
-  }
-  return "";
-}
-
 async function fetchJson(url) {
   const response = await fetch(url, {
     headers: { accept: "application/json" },
@@ -259,7 +250,10 @@ function normalizeAudiusTrack(track) {
 }
 
 function normalizeRadioTrack(track) {
-  const sourceId = safeString(track?.stationuuid || track?.changeuuid || track?.url_resolved || track?.url, 300);
+  const sourceId = safeString(
+    track?.stationuuid || track?.changeuuid || track?.url_resolved || track?.url,
+    300
+  );
   const stream = safeString(track?.url_resolved || track?.url, 2000);
   const title = safeString(track?.name || track?.title, 500);
 
@@ -740,7 +734,7 @@ app.get("/api/trending", async (req, res) => {
   try {
     await ensureDb();
 
-    const offset = clampInt(req.query.offset, 0, 1_000_000, 0);
+    const offset = clampInt(req.query.offset, 0, 1000000, 0);
     const limit = clampInt(req.query.limit, 1, 100, 50);
 
     const totalResult = await pool.query(`SELECT COUNT(*)::int AS count FROM tracks;`);
@@ -804,7 +798,7 @@ app.get("/api/search", async (req, res) => {
     await ensureDb();
 
     const q = safeString(req.query.q || "", 200);
-    const offset = clampInt(req.query.offset, 0, 1_000_000, 0);
+    const offset = clampInt(req.query.offset, 0, 1000000, 0);
     const limit = clampInt(req.query.limit, 1, 100, 50);
 
     if (!q) {
