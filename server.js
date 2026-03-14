@@ -1,1171 +1,928 @@
-require('dotenv').config();
-
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-const crypto = require('crypto');
-const { Pool } = require('pg');
+const express = require("express");
+const cors = require("cors");
+const { Pool } = require("pg");
 
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: "2mb" }));
 
-const PORT = Number(process.env.PORT || 10000);
-const DATABASE_URL = process.env.DATABASE_URL || '';
-const APP_URL = process.env.APP_URL || 'https://aimusic-api.onrender.com';
+const PORT = process.env.PORT || 10000;
+const DATABASE_URL = process.env.DATABASE_URL || "";
 
-const AUDIUS_API_BASE = process.env.AUDIUS_API_BASE || 'https://discoveryprovider.audius.co/v1';
-const AUDIUS_AUTH_BASE = process.env.AUDIUS_AUTH_BASE || 'https://api.audius.co/v1';
-const AUDIUS_STREAM_BASE = process.env.AUDIUS_STREAM_BASE || 'https://discoveryprovider.audius.co/v1';
-const AUDIUS_API_BEARER_TOKEN = process.env.AUDIUS_API_BEARER_TOKEN || '';
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: DATABASE_URL.includes("localhost")
+        ? false
+        : { rejectUnauthorized: false },
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 15000,
+    })
+  : null;
 
-const RADIO_BROWSER_BASE =
-  process.env.RADIO_BROWSER_BASE || 'https://de1.api.radio-browser.info/json';
+const AUDIOUS_LIMIT = 100;
+const AUDIOUS_MAX_PAGES = Number(process.env.AUDIOUS_MAX_PAGES || 4);
+const RADIO_LIMIT = 100;
+const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 25000);
+const BETWEEN_REQUESTS_MS = Number(process.env.BETWEEN_REQUESTS_MS || 180);
 
-const USER_AGENT =
-  process.env.USER_AGENT || 'AIMusic/1.0 (+https://aimusic-api.onrender.com)';
-
-if (!DATABASE_URL) {
-  console.error('DATABASE_URL is missing');
-}
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl:
-    DATABASE_URL &&
-    !/localhost|127\.0\.0\.1/.test(DATABASE_URL) &&
-    !DATABASE_URL.includes('.internal')
-      ? { rejectUnauthorized: false }
-      : false,
-});
-
-const http = axios.create({
-  timeout: 30000,
-  headers: {
-    'User-Agent': USER_AGENT,
-    Accept: 'application/json',
-  },
-});
-
-const importState = {
-  running: false,
-  stage: 'idle',
-  startedAt: null,
-  finishedAt: null,
-  lastError: '',
-  counters: {
-    audius: 0,
-    radio: 0,
-    total: 0,
-  },
-};
-
-const AUDIUS_GENRES = [
-  '',
-  'Electronic',
-  'Hip-Hop/Rap',
-  'Pop',
-  'Rock',
-  'Jazz',
-  'Alternative',
-  'House',
-  'Techno',
-  'Dubstep',
-  'Lo-Fi',
-  'Ambient',
-  'Instrumental',
-  'R&B/Soul',
-  'Trap',
-  'Drum & Bass',
-  'Dance',
-  'Indie',
-  'Classical',
-];
-
-const AUDIUS_QUERIES = [
-  'house',
-  'deep house',
-  'progressive house',
-  'tech house',
-  'techno',
-  'melodic techno',
-  'trance',
-  'progressive trance',
-  'edm',
-  'electronic',
-  'dance',
-  'club',
-  'dj mix',
-  'remix',
-  'radio edit',
-  'dubstep',
-  'drum and bass',
-  'dnb',
-  'jungle',
-  'hardstyle',
-  'phonk',
-  'hip hop',
-  'rap',
-  'trap',
-  'lofi',
-  'lo-fi',
-  'jazz',
-  'blues',
-  'rock',
-  'indie',
-  'pop',
-  'synthwave',
-  'ambient',
-  'chill',
-  'instrumental',
-  'ukraine',
-  'ukrainian',
-  'ukrainian music',
-  'russian',
-  'latin',
-  'reggaeton',
-  'afrobeats',
-  'soundtrack',
-  'gaming music',
-  'beats',
-  'vocal',
-  'female vocal',
-  'male vocal',
-  'underground',
-  'future bass',
-  'garage',
-  'uk garage',
-  'breakbeat',
-  'electro',
-  'house remix',
-  'dance remix',
-  'club mix',
-];
-
-const PLAYLIST_QUERIES = [
-  'house',
-  'techno',
-  'trance',
-  'electronic',
-  'dance',
-  'club',
-  'hip hop',
-  'rap',
-  'phonk',
-  'lofi',
-  'rock',
-  'indie',
-  'pop',
-  'synthwave',
-  'ambient',
-  'chill',
-  'dubstep',
-  'drum and bass',
+const AUDIOUS_TERMS = [
+  "house",
+  "techno",
+  "trance",
+  "dance",
+  "electronic",
+  "edm",
+  "dubstep",
+  "drum and bass",
+  "bass music",
+  "phonk",
+  "hip hop",
+  "rap",
+  "trap",
+  "lofi",
+  "jazz",
+  "pop",
+  "rock",
+  "indie",
+  "ambient",
+  "chill",
+  "synthwave",
+  "melodic house",
+  "progressive house",
+  "afro house",
+  "hardstyle",
+  "uk garage",
+  "future bass",
+  "reggaeton",
+  "latin",
+  "k-pop",
 ];
 
 const RADIO_TAGS = [
-  'dance',
-  'house',
-  'deep house',
-  'electronic',
-  'edm',
-  'techno',
-  'trance',
-  'pop',
-  'rock',
-  'jazz',
-  'hiphop',
-  'rap',
-  'rnb',
-  'lofi',
-  'ambient',
-  'chillout',
-  'dubstep',
-  'drum and bass',
-  'hardstyle',
-  'synthwave',
-  'metal',
-  'classical',
-  'oldies',
-  '80s',
-  '90s',
-  'top40',
-  'hits',
-  'club',
-  'lounge',
-  'disco',
-  'funk',
-  'reggaeton',
+  "house",
+  "deep house",
+  "techno",
+  "trance",
+  "dance",
+  "electronic",
+  "edm",
+  "dubstep",
+  "drum and bass",
+  "bass",
+  "hiphop",
+  "rap",
+  "pop",
+  "rock",
+  "jazz",
+  "smooth jazz",
+  "oldies",
+  "80s",
+  "90s",
+  "hits",
 ];
 
 const RADIO_COUNTRIES = [
-  'US', 'GB', 'DE', 'FR', 'ES', 'IT', 'NL', 'PL', 'UA', 'CA',
-  'AU', 'BE', 'CH', 'AT', 'SE', 'NO', 'DK', 'IE', 'PT', 'CZ',
-  'RO', 'HU', 'TR', 'BR', 'AR', 'MX', 'JP', 'KR', 'IN', 'ZA',
+  "United States",
+  "United Kingdom",
+  "Germany",
+  "France",
+  "Spain",
+  "Italy",
+  "Netherlands",
+  "Poland",
+  "Ukraine",
+  "Canada",
 ];
 
-const RADIO_LANGUAGES = [
-  'english',
-  'spanish',
-  'french',
-  'german',
-  'italian',
-  'portuguese',
-  'polish',
-  'ukrainian',
-  'russian',
-  'dutch',
-];
+const importState = {
+  running: false,
+  kind: null,
+  started_at: null,
+  finished_at: null,
+  current_step: null,
+  totals: {
+    received: 0,
+    affected: 0,
+    skipped: 0,
+    errors: 0,
+  },
+  details: {
+    audius: { received: 0, affected: 0, skipped: 0, errors: 0 },
+    radio: { received: 0, affected: 0, skipped: 0, errors: 0 },
+  },
+  logs: [],
+  last_error: null,
+};
+
+function resetImportState(kind) {
+  importState.running = true;
+  importState.kind = kind;
+  importState.started_at = new Date().toISOString();
+  importState.finished_at = null;
+  importState.current_step = "starting";
+  importState.totals = { received: 0, affected: 0, skipped: 0, errors: 0 };
+  importState.details = {
+    audius: { received: 0, affected: 0, skipped: 0, errors: 0 },
+    radio: { received: 0, affected: 0, skipped: 0, errors: 0 },
+  };
+  importState.logs = [];
+  importState.last_error = null;
+}
+
+function finishImportState() {
+  importState.running = false;
+  importState.finished_at = new Date().toISOString();
+  importState.current_step = "idle";
+}
+
+function logImport(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  importState.logs.push(line);
+  if (importState.logs.length > 100) {
+    importState.logs.shift();
+  }
+  console.log(line);
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function clampInt(value, min, max, fallback) {
-  const n = Number.parseInt(String(value ?? ''), 10);
-  if (Number.isNaN(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function safeText(value) {
-  if (value === undefined || value === null) return '';
-  return String(value).replace(/\u0000/g, '').replace(/\s+/g, ' ').trim();
+function safeString(value, max = 1000) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim().slice(0, max);
 }
 
-function safeUrl(value) {
-  const v = safeText(value).replace(/\s/g, '');
-  if (!v) return '';
-  if (/^https?:\/\//i.test(v)) return v;
-  return '';
-}
-
-function makeHash(text) {
-  return crypto.createHash('md5').update(String(text)).digest('hex');
-}
-
-function pickCover(raw) {
-  if (!raw) return '';
-  if (typeof raw === 'string') return safeUrl(raw);
-
-  const candidates = [
-    raw['150x150'],
-    raw['480x480'],
-    raw['1000x1000'],
-    raw['640x'],
-    raw['150x'],
-    raw.url,
-  ];
-
-  for (const item of candidates) {
-    const url = safeUrl(item);
-    if (url) return url;
+function pickFirst(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return value;
+    }
   }
-
-  return '';
+  return "";
 }
 
-function baseScore(track) {
-  let score = 0;
-
-  if (track.source === 'radio') score += 1000000;
-  if (track.source === 'audius') score += 100000;
-
-  if (track.is_live) score += 200000;
-  if (track.cover) score += 200;
-  if (track.genre) score += 25;
-  if (track.language) score += 10;
-
-  return score;
-}
-
-function normalizeTrack(input) {
-  const track = {
-    id: safeText(input.id),
-    title: safeText(input.title),
-    artist: safeText(input.artist),
-    album: safeText(input.album),
-    stream: safeUrl(input.stream),
-    cover: safeUrl(input.cover),
-    page_url: safeUrl(input.page_url),
-    source: safeText(input.source).toLowerCase(),
-    is_live: Boolean(input.is_live),
-    genre: safeText(input.genre),
-    language: safeText(input.language),
-    sort_score: Number(input.sort_score || 0),
-  };
-
-  if (!track.id || !track.title || !track.stream || !track.source) {
-    return null;
-  }
-
-  return track;
-}
-
-function mapAudiusTrack(raw) {
-  if (!raw || !raw.id) return null;
-
-  const permalink = safeText(raw.permalink);
-  const pageUrl = permalink
-    ? permalink.startsWith('http')
-      ? permalink
-      : `https://audius.co${permalink.startsWith('/') ? '' : '/'}${permalink}`
-    : '';
-
-  const title = safeText(raw.title);
-  const artist = safeText(raw.user?.name || raw.user?.handle || raw.artist);
-  const cover = pickCover(raw.artwork || raw.cover_art || raw.coverArt || raw.cover);
-  const genre = safeText(raw.genre);
-
-  const track = normalizeTrack({
-    id: `audius_${raw.id}`,
-    title,
-    artist,
-    album: '',
-    stream: `${AUDIUS_STREAM_BASE}/tracks/${raw.id}/stream`,
-    cover,
-    page_url: pageUrl,
-    source: 'audius',
-    is_live: false,
-    genre,
-    language: '',
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
-  if (!track) return null;
-  track.sort_score = baseScore(track);
-  return track;
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for ${url}`);
+  }
+
+  return response.json();
 }
 
-function mapRadioStation(raw) {
-  if (!raw) return null;
+async function ensureDb() {
+  if (!pool) {
+    throw new Error("DATABASE_URL is missing");
+  }
 
-  const stream = safeUrl(raw.url_resolved || raw.url);
-  const stationuuid = safeText(raw.stationuuid || raw.uuid || raw.changeuuid || makeHash(stream));
-  const title = safeText(raw.name);
-  const artist = safeText(raw.country || raw.countrycode || raw.state || 'Radio');
-  const cover = safeUrl(raw.favicon);
-  const genre = safeText(raw.tags);
-  const language = safeText(raw.language || raw.languagecodes);
-  const votes = Number(raw.votes || 0);
-  const clickcount = Number(raw.clickcount || 0);
-  const bitrate = Number(raw.bitrate || 0);
-
-  const track = normalizeTrack({
-    id: `radio_${stationuuid}`,
-    title,
-    artist,
-    album: '',
-    stream,
-    cover,
-    page_url: safeUrl(raw.homepage),
-    source: 'radio',
-    is_live: true,
-    genre,
-    language,
-  });
-
-  if (!track) return null;
-  track.sort_score = baseScore(track) + votes * 5 + clickcount * 3 + bitrate;
-  return track;
-}
-
-async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tracks (
-      id TEXT PRIMARY KEY,
+      id BIGSERIAL PRIMARY KEY,
+      source TEXT NOT NULL,
+      source_id TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
       artist TEXT NOT NULL DEFAULT '',
       album TEXT NOT NULL DEFAULT '',
       stream TEXT NOT NULL DEFAULT '',
       cover TEXT NOT NULL DEFAULT '',
       page_url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      is_live BOOLEAN NOT NULL DEFAULT FALSE,
       genre TEXT NOT NULL DEFAULT '',
       language TEXT NOT NULL DEFAULT '',
-      sort_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+      is_live BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (source, source_id)
     );
   `);
 
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS page_url TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS genre TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS is_live BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`);
+
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_source ON tracks(source);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_updated_at ON tracks(updated_at DESC);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_sort_score ON tracks(sort_score DESC);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_lower_title ON tracks((lower(title)));`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_lower_artist ON tracks((lower(artist)));`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_lower_genre ON tracks((lower(genre)));`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_lower_language ON tracks((lower(language)));`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);`);
 }
 
-async function upsertTracksBatch(tracks, chunkSize = 200) {
-  const valid = tracks.filter(Boolean);
-  if (!valid.length) return 0;
-
-  let total = 0;
-
-  for (let i = 0; i < valid.length; i += chunkSize) {
-    const chunk = valid.slice(i, i + chunkSize);
-    const values = [];
-    const placeholders = [];
-
-    chunk.forEach((track, index) => {
-      const b = index * 12;
-      placeholders.push(
-        `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10}, $${b + 11}, $${b + 12})`
-      );
-      values.push(
-        track.id,
-        track.title,
-        track.artist,
-        track.album,
-        track.stream,
-        track.cover,
-        track.page_url,
-        track.source,
-        track.is_live,
-        track.genre,
-        track.language,
-        track.sort_score
-      );
-    });
-
-    await pool.query(
-      `
-      INSERT INTO tracks (
-        id, title, artist, album, stream, cover, page_url,
-        source, is_live, genre, language, sort_score
-      )
-      VALUES ${placeholders.join(', ')}
-      ON CONFLICT (id) DO UPDATE SET
-        title = EXCLUDED.title,
-        artist = EXCLUDED.artist,
-        album = EXCLUDED.album,
-        stream = EXCLUDED.stream,
-        cover = EXCLUDED.cover,
-        page_url = EXCLUDED.page_url,
-        source = EXCLUDED.source,
-        is_live = EXCLUDED.is_live,
-        genre = EXCLUDED.genre,
-        language = EXCLUDED.language,
-        sort_score = EXCLUDED.sort_score,
-        updated_at = NOW();
-      `,
-      values
-    );
-
-    total += chunk.length;
-  }
-
-  return total;
-}
-
-async function getSourcesActive() {
-  const { rows } = await pool.query(
-    `SELECT source FROM tracks GROUP BY source ORDER BY source;`
-  );
-  return rows.map((row) => row.source);
-}
-
-async function audiusGet(path, params = {}) {
-  const useAuth = Boolean(AUDIUS_API_BEARER_TOKEN);
-  const base = useAuth ? AUDIUS_AUTH_BASE : AUDIUS_API_BASE;
-  const headers = useAuth ? { Authorization: `Bearer ${AUDIUS_API_BEARER_TOKEN}` } : {};
-
-  const response = await http.get(`${base}${path}`, {
-    params,
-    headers,
-  });
-
-  return response.data;
-}
-
-async function radioSearch(params = {}) {
-  const response = await http.get(`${RADIO_BROWSER_BASE}/stations/search`, {
-    params,
-  });
-  return Array.isArray(response.data) ? response.data : [];
-}
-
-async function importAudiusTracksIntoMap(map) {
-  importState.stage = 'audius_tracks';
-
-  const trendingTimes = ['week', 'month', 'year', 'allTime'];
-
-  for (const time of trendingTimes) {
-    for (const genre of AUDIUS_GENRES) {
-      for (const offset of [0, 100, 200]) {
-        try {
-          const data = await audiusGet('/tracks/trending', {
-            time,
-            limit: 100,
-            offset,
-            ...(genre ? { genre } : {}),
-          });
-
-          const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-          if (!list.length) break;
-
-          for (const item of list) {
-            const track = mapAudiusTrack(item);
-            if (track) map.set(track.id, track);
-          }
-        } catch (error) {
-          console.error('Audius trending error:', time, genre, offset, error.message);
-          break;
-        }
-
-        await sleep(120);
-      }
-    }
-  }
-
-  for (const offset of [0, 100, 200, 300, 400, 500]) {
-    try {
-      const data = await audiusGet('/tracks/underground', {
-        limit: 100,
-        offset,
-      });
-
-      const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-      if (!list.length) break;
-
-      for (const item of list) {
-        const track = mapAudiusTrack(item);
-        if (track) map.set(track.id, track);
-      }
-    } catch (error) {
-      console.error('Audius underground error:', offset, error.message);
-      break;
-    }
-
-    await sleep(120);
-  }
-
-  for (const query of AUDIUS_QUERIES) {
-    for (const offset of [0, 100, 200, 300, 400]) {
-      try {
-        const data = await audiusGet('/tracks/search', {
-          query,
-          limit: 100,
-          offset,
-        });
-
-        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-        if (!list.length) break;
-
-        for (const item of list) {
-          const track = mapAudiusTrack(item);
-          if (track) map.set(track.id, track);
-        }
-      } catch (error) {
-        console.error('Audius search error:', query, offset, error.message);
-        break;
-      }
-
-      await sleep(120);
-    }
-  }
-}
-
-async function importAudiusPlaylistsIntoMap(map) {
-  importState.stage = 'audius_playlists';
-
-  const playlistIds = new Set();
-
-  for (const time of ['week', 'month', 'year']) {
-    for (const offset of [0, 100, 200]) {
-      try {
-        const data = await audiusGet('/playlists/trending', {
-          time,
-          limit: 100,
-          offset,
-        });
-
-        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-        if (!list.length) break;
-
-        for (const item of list) {
-          const id = safeText(item.id);
-          if (id) playlistIds.add(id);
-        }
-      } catch (error) {
-        console.error('Audius trending playlists error:', time, offset, error.message);
-        break;
-      }
-
-      await sleep(120);
-    }
-  }
-
-  for (const query of PLAYLIST_QUERIES) {
-    for (const offset of [0, 100, 200]) {
-      try {
-        const data = await audiusGet('/playlists/search', {
-          query,
-          limit: 100,
-          offset,
-        });
-
-        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-        if (!list.length) break;
-
-        for (const item of list) {
-          const id = safeText(item.id);
-          if (id) playlistIds.add(id);
-        }
-      } catch (error) {
-        console.error('Audius search playlists error:', query, offset, error.message);
-        break;
-      }
-
-      await sleep(120);
-    }
-  }
-
-  const ids = [...playlistIds];
-
-  for (let i = 0; i < ids.length; i++) {
-    const playlistId = ids[i];
-
-    try {
-      const data = await audiusGet(`/playlists/${playlistId}/tracks`, {
-        limit: 1000,
-      });
-
-      const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-
-      for (const item of list) {
-        const track = mapAudiusTrack(item);
-        if (track) map.set(track.id, track);
-      }
-    } catch (error) {
-      console.error('Audius playlist tracks error:', playlistId, error.message);
-    }
-
-    await sleep(120);
-  }
-}
-
-async function importAudius() {
-  const map = new Map();
-
-  await importAudiusTracksIntoMap(map);
-  await importAudiusPlaylistsIntoMap(map);
-
-  const saved = await upsertTracksBatch([...map.values()], 200);
-
-  importState.counters.audius = saved;
-  importState.counters.total =
-    importState.counters.audius + importState.counters.radio;
-
-  return saved;
-}
-
-async function importRadio() {
-  importState.stage = 'radio';
-
-  const map = new Map();
-
-  const broadStrategies = [
-    { order: 'votes', reverse: true, hidebroken: true, limit: 1000, offset: 0 },
-    { order: 'clickcount', reverse: true, hidebroken: true, limit: 1000, offset: 0 },
-    { order: 'lastchecktime', reverse: true, hidebroken: true, limit: 1000, offset: 0 },
-  ];
-
-  for (const params of broadStrategies) {
-    try {
-      const list = await radioSearch(params);
-      for (const item of list) {
-        const track = mapRadioStation(item);
-        if (track) map.set(track.id, track);
-      }
-    } catch (error) {
-      console.error('Radio broad import error:', error.message);
-    }
-
-    await sleep(120);
-  }
-
-  for (const tag of RADIO_TAGS) {
-    for (const offset of [0, 250, 500]) {
-      try {
-        const list = await radioSearch({
-          tagList: tag,
-          order: 'votes',
-          reverse: true,
-          hidebroken: true,
-          limit: 250,
-          offset,
-        });
-
-        if (!list.length) break;
-
-        for (const item of list) {
-          const track = mapRadioStation(item);
-          if (track) map.set(track.id, track);
-        }
-      } catch (error) {
-        console.error('Radio tag import error:', tag, offset, error.message);
-        break;
-      }
-
-      await sleep(120);
-    }
-  }
-
-  for (const country of RADIO_COUNTRIES) {
-    for (const offset of [0, 200, 400]) {
-      try {
-        const list = await radioSearch({
-          countrycode: country,
-          order: 'votes',
-          reverse: true,
-          hidebroken: true,
-          limit: 200,
-          offset,
-        });
-
-        if (!list.length) break;
-
-        for (const item of list) {
-          const track = mapRadioStation(item);
-          if (track) map.set(track.id, track);
-        }
-      } catch (error) {
-        console.error('Radio country import error:', country, offset, error.message);
-        break;
-      }
-
-      await sleep(120);
-    }
-  }
-
-  for (const language of RADIO_LANGUAGES) {
-    for (const offset of [0, 200]) {
-      try {
-        const list = await radioSearch({
-          language,
-          order: 'votes',
-          reverse: true,
-          hidebroken: true,
-          limit: 200,
-          offset,
-        });
-
-        if (!list.length) break;
-
-        for (const item of list) {
-          const track = mapRadioStation(item);
-          if (track) map.set(track.id, track);
-        }
-      } catch (error) {
-        console.error('Radio language import error:', language, offset, error.message);
-        break;
-      }
-
-      await sleep(120);
-    }
-  }
-
-  const saved = await upsertTracksBatch([...map.values()], 200);
-
-  importState.counters.radio = saved;
-  importState.counters.total =
-    importState.counters.audius + importState.counters.radio;
-
-  return saved;
-}
-
-async function runFullImport({ reset = false } = {}) {
-  if (importState.running) {
-    return {
-      ok: true,
-      alreadyRunning: true,
-      import: importState,
-    };
-  }
-
-  importState.running = true;
-  importState.stage = 'starting';
-  importState.startedAt = new Date().toISOString();
-  importState.finishedAt = null;
-  importState.lastError = '';
-  importState.counters = { audius: 0, radio: 0, total: 0 };
-
-  try {
-    await initDb();
-
-    if (reset) {
-      importState.stage = 'reset';
-      await pool.query(`TRUNCATE TABLE tracks;`);
-    }
-
-    await importRadio();
-    await importAudius();
-
-    importState.stage = 'done';
-    importState.finishedAt = new Date().toISOString();
-
-    return {
-      ok: true,
-      import: importState,
-    };
-  } catch (error) {
-    importState.stage = 'failed';
-    importState.lastError = error.message;
-    importState.finishedAt = new Date().toISOString();
-    console.error('Import failed:', error);
-
-    return {
-      ok: false,
-      error: error.message,
-      import: importState,
-    };
-  } finally {
-    importState.running = false;
-  }
-}
-
-function buildPagedResponse({ totalPool, rows, offset, limit, sourcesActive }) {
-  const nextOffset = offset + rows.length < totalPool ? offset + limit : null;
+function normalizeAudiusTrack(track) {
+  const id = safeString(track.id, 200);
+  if (!id) return null;
+
+  const artwork =
+    track?.artwork?.["480x480"] ||
+    track?.artwork?.["1000x1000"] ||
+    track?.artwork?.["150x150"] ||
+    "";
+
+  const artist =
+    track?.user?.name ||
+    track?.user?.handle ||
+    track?.artist ||
+    "";
+
+  const pageUrl =
+    safeString(track?.permalink, 2000) ||
+    safeString(track?.url, 2000) ||
+    "";
 
   return {
-    total_pool: totalPool,
-    total_returned: rows.length,
-    offset,
-    limit,
-    next_offset: nextOffset,
-    sources_active: sourcesActive,
-    tracks: rows,
+    source: "audius",
+    source_id: id,
+    title: safeString(track?.title, 500),
+    artist: safeString(artist, 500),
+    album: safeString(track?.album_name || "", 500),
+    stream: `https://discoveryprovider.audius.co/v1/tracks/${encodeURIComponent(id)}/stream`,
+    cover: safeString(artwork, 2000),
+    page_url: pageUrl,
+    genre: safeString(track?.genre || "", 500),
+    language: safeString(track?.language || "", 200),
+    is_live: false,
   };
 }
 
-app.get('/', async (_req, res) => {
-  res.json({
-    ok: true,
-    name: 'AIMusic API',
-    primary_url: APP_URL,
-    db: DATABASE_URL ? 'configured' : 'missing DATABASE_URL',
+function normalizeRadioTrack(track) {
+  const sourceId = safeString(track?.stationuuid || track?.changeuuid || track?.url_resolved || track?.url, 300);
+  const stream = safeString(track?.url_resolved || track?.url, 2000);
+  const title = safeString(track?.name || track?.title, 500);
+
+  if (!sourceId || !stream || !title) {
+    return null;
+  }
+
+  return {
+    source: "radio",
+    source_id: sourceId,
+    title,
+    artist: safeString(track?.country || track?.countrycode || "", 500),
+    album: "",
+    stream,
+    cover: safeString(track?.favicon || "", 2000),
+    page_url: safeString(track?.homepage || "", 2000),
+    genre: safeString(track?.tags || "", 1000),
+    language: safeString(track?.language || track?.languagecodes || "", 200),
+    is_live: true,
+  };
+}
+
+async function upsertTrack(track) {
+  if (!pool) throw new Error("DATABASE_URL is missing");
+  if (!track) return 0;
+
+  if (!track.source || !track.source_id || !track.title || !track.stream) {
+    return 0;
+  }
+
+  await pool.query(
+    `
+    INSERT INTO tracks (
+      source,
+      source_id,
+      title,
+      artist,
+      album,
+      stream,
+      cover,
+      page_url,
+      genre,
+      language,
+      is_live,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+    ON CONFLICT (source, source_id)
+    DO UPDATE SET
+      title = EXCLUDED.title,
+      artist = EXCLUDED.artist,
+      album = EXCLUDED.album,
+      stream = EXCLUDED.stream,
+      cover = EXCLUDED.cover,
+      page_url = EXCLUDED.page_url,
+      genre = EXCLUDED.genre,
+      language = EXCLUDED.language,
+      is_live = EXCLUDED.is_live,
+      updated_at = NOW();
+    `,
+    [
+      track.source,
+      track.source_id,
+      track.title,
+      track.artist,
+      track.album,
+      track.stream,
+      track.cover,
+      track.page_url,
+      track.genre,
+      track.language,
+      track.is_live,
+    ]
+  );
+
+  return 1;
+}
+
+async function getStats() {
+  if (!pool) {
+    return {
+      total_tracks: 0,
+      by_source: [],
+      sources_active: [],
+    };
+  }
+
+  const result = await pool.query(`
+    SELECT source, COUNT(*)::int AS count
+    FROM tracks
+    GROUP BY source
+    ORDER BY source;
+  `);
+
+  const bySource = result.rows.map((row) => ({
+    source: row.source,
+    count: Number(row.count),
+  }));
+
+  const totalTracks = bySource.reduce((sum, item) => sum + item.count, 0);
+
+  return {
+    total_tracks: totalTracks,
+    by_source: bySource,
+    sources_active: bySource.map((item) => item.source),
+  };
+}
+
+async function importAudiusJob() {
+  const seen = new Set();
+
+  importState.current_step = "audius";
+
+  for (const term of AUDIOUS_TERMS) {
+    logImport(`Audius: term="${term}"`);
+
+    for (let page = 0; page < AUDIOUS_MAX_PAGES; page++) {
+      const offset = page * AUDIOUS_LIMIT;
+      const url =
+        `https://discoveryprovider.audius.co/v1/tracks/search` +
+        `?query=${encodeURIComponent(term)}` +
+        `&limit=${AUDIOUS_LIMIT}` +
+        `&offset=${offset}`;
+
+      let data;
+      try {
+        data = await fetchJson(url);
+      } catch (error) {
+        importState.totals.errors += 1;
+        importState.details.audius.errors += 1;
+        importState.last_error = error.message;
+        logImport(`Audius fetch error: ${error.message}`);
+        await sleep(BETWEEN_REQUESTS_MS);
+        continue;
+      }
+
+      const items = Array.isArray(data?.data) ? data.data : [];
+      if (!items.length) {
+        break;
+      }
+
+      let freshInThisPage = 0;
+
+      for (const rawTrack of items) {
+        importState.totals.received += 1;
+        importState.details.audius.received += 1;
+
+        const normalized = normalizeAudiusTrack(rawTrack);
+        if (!normalized) {
+          importState.totals.skipped += 1;
+          importState.details.audius.skipped += 1;
+          continue;
+        }
+
+        const dedupeKey = `${normalized.source}:${normalized.source_id}`;
+        if (seen.has(dedupeKey)) {
+          importState.totals.skipped += 1;
+          importState.details.audius.skipped += 1;
+          continue;
+        }
+
+        seen.add(dedupeKey);
+
+        try {
+          const affected = await upsertTrack(normalized);
+          importState.totals.affected += affected;
+          importState.details.audius.affected += affected;
+          freshInThisPage += affected;
+        } catch (error) {
+          importState.totals.errors += 1;
+          importState.details.audius.errors += 1;
+          importState.last_error = error.message;
+          logImport(`Audius upsert error: ${error.message}`);
+        }
+      }
+
+      if (items.length < AUDIOUS_LIMIT) {
+        break;
+      }
+
+      if (freshInThisPage === 0 && page >= 1) {
+        break;
+      }
+
+      await sleep(BETWEEN_REQUESTS_MS);
+    }
+  }
+
+  logImport(
+    `Audius done: received=${importState.details.audius.received}, affected=${importState.details.audius.affected}`
+  );
+}
+
+async function importRadioJob() {
+  const seen = new Set();
+
+  importState.current_step = "radio";
+
+  for (const tag of RADIO_TAGS) {
+    const url =
+      `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(tag)}` +
+      `?hidebroken=true&order=votes&reverse=true&limit=${RADIO_LIMIT}`;
+
+    logImport(`Radio tag: "${tag}"`);
+
+    let items = [];
+    try {
+      items = await fetchJson(url);
+      if (!Array.isArray(items)) items = [];
+    } catch (error) {
+      importState.totals.errors += 1;
+      importState.details.radio.errors += 1;
+      importState.last_error = error.message;
+      logImport(`Radio tag fetch error: ${error.message}`);
+      await sleep(BETWEEN_REQUESTS_MS);
+      continue;
+    }
+
+    for (const rawTrack of items) {
+      importState.totals.received += 1;
+      importState.details.radio.received += 1;
+
+      const normalized = normalizeRadioTrack(rawTrack);
+      if (!normalized) {
+        importState.totals.skipped += 1;
+        importState.details.radio.skipped += 1;
+        continue;
+      }
+
+      const dedupeKey = `${normalized.source}:${normalized.source_id}`;
+      if (seen.has(dedupeKey)) {
+        importState.totals.skipped += 1;
+        importState.details.radio.skipped += 1;
+        continue;
+      }
+
+      seen.add(dedupeKey);
+
+      try {
+        const affected = await upsertTrack(normalized);
+        importState.totals.affected += affected;
+        importState.details.radio.affected += affected;
+      } catch (error) {
+        importState.totals.errors += 1;
+        importState.details.radio.errors += 1;
+        importState.last_error = error.message;
+        logImport(`Radio upsert error: ${error.message}`);
+      }
+    }
+
+    await sleep(BETWEEN_REQUESTS_MS);
+  }
+
+  for (const country of RADIO_COUNTRIES) {
+    const url =
+      `https://de1.api.radio-browser.info/json/stations/bycountry/${encodeURIComponent(country)}` +
+      `?hidebroken=true&order=votes&reverse=true&limit=${RADIO_LIMIT}`;
+
+    logImport(`Radio country: "${country}"`);
+
+    let items = [];
+    try {
+      items = await fetchJson(url);
+      if (!Array.isArray(items)) items = [];
+    } catch (error) {
+      importState.totals.errors += 1;
+      importState.details.radio.errors += 1;
+      importState.last_error = error.message;
+      logImport(`Radio country fetch error: ${error.message}`);
+      await sleep(BETWEEN_REQUESTS_MS);
+      continue;
+    }
+
+    for (const rawTrack of items) {
+      importState.totals.received += 1;
+      importState.details.radio.received += 1;
+
+      const normalized = normalizeRadioTrack(rawTrack);
+      if (!normalized) {
+        importState.totals.skipped += 1;
+        importState.details.radio.skipped += 1;
+        continue;
+      }
+
+      const dedupeKey = `${normalized.source}:${normalized.source_id}`;
+      if (seen.has(dedupeKey)) {
+        importState.totals.skipped += 1;
+        importState.details.radio.skipped += 1;
+        continue;
+      }
+
+      seen.add(dedupeKey);
+
+      try {
+        const affected = await upsertTrack(normalized);
+        importState.totals.affected += affected;
+        importState.details.radio.affected += affected;
+      } catch (error) {
+        importState.totals.errors += 1;
+        importState.details.radio.errors += 1;
+        importState.last_error = error.message;
+        logImport(`Radio upsert error: ${error.message}`);
+      }
+    }
+
+    await sleep(BETWEEN_REQUESTS_MS);
+  }
+
+  logImport(
+    `Radio done: received=${importState.details.radio.received}, affected=${importState.details.radio.affected}`
+  );
+}
+
+async function backgroundImport(kind) {
+  if (importState.running) {
+    return false;
+  }
+
+  resetImportState(kind);
+  logImport(`Background import started: ${kind}`);
+
+  (async () => {
+    try {
+      await ensureDb();
+
+      if (kind === "audius") {
+        await importAudiusJob();
+      } else if (kind === "radio") {
+        await importRadioJob();
+      } else if (kind === "all") {
+        await importAudiusJob();
+        await importRadioJob();
+      } else {
+        throw new Error(`Unknown import kind: ${kind}`);
+      }
+
+      logImport(`Background import finished: ${kind}`);
+    } catch (error) {
+      importState.last_error = error.message;
+      importState.totals.errors += 1;
+      logImport(`Background import failed: ${error.message}`);
+    } finally {
+      finishImportState();
+    }
+  })();
+
+  return true;
+}
+
+function publicImportState() {
+  return {
+    running: importState.running,
+    kind: importState.kind,
+    started_at: importState.started_at,
+    finished_at: importState.finished_at,
+    current_step: importState.current_step,
+    totals: importState.totals,
+    details: importState.details,
+    last_error: importState.last_error,
+    logs: importState.logs.slice(-20),
+  };
+}
+
+app.get("/", async (_req, res) => {
+  try {
+    const stats = await getStats();
+    res.json({
+      ok: true,
+      app: "AIMusic API",
+      database: Boolean(pool),
+      total_tracks: stats.total_tracks,
+      by_source: stats.by_source,
+      sources_active: stats.sources_active,
+      endpoints: {
+        health: "/api/health",
+        stats: "/api/stats",
+        trending: "/api/trending?offset=0&limit=50",
+        search: "/api/search?q=house&offset=0&limit=50",
+        import_all: "/api/import/all",
+        import_audius: "/api/import/audius",
+        import_radio: "/api/import/radio",
+        import_status: "/api/import/status",
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/health", async (_req, res) => {
+  try {
+    await ensureDb();
+    res.json({ ok: true, database: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, database: false, error: error.message });
+  }
+});
+
+app.get("/api/stats", async (_req, res) => {
+  try {
+    const stats = await getStats();
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/import/status", async (_req, res) => {
+  try {
+    const stats = await getStats();
+    res.json({
+      ...publicImportState(),
+      stats,
+    });
+  } catch (error) {
+    res.status(500).json({
+      ...publicImportState(),
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/import/all", async (_req, res) => {
+  try {
+    const started = await backgroundImport("all");
+    res.json({
+      ok: true,
+      started,
+      message: started
+        ? "Background import started"
+        : "Import already running",
+      status_url: "/api/import/status",
+      status: publicImportState(),
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/import/audius", async (_req, res) => {
+  try {
+    const started = await backgroundImport("audius");
+    res.json({
+      ok: true,
+      started,
+      message: started
+        ? "Background Audius import started"
+        : "Import already running",
+      status_url: "/api/import/status",
+      status: publicImportState(),
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/import/radio", async (_req, res) => {
+  try {
+    const started = await backgroundImport("radio");
+    res.json({
+      ok: true,
+      started,
+      message: started
+        ? "Background Radio import started"
+        : "Import already running",
+      status_url: "/api/import/status",
+      status: publicImportState(),
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/trending", async (req, res) => {
+  try {
+    await ensureDb();
+
+    const offset = clampInt(req.query.offset, 0, 1_000_000, 0);
+    const limit = clampInt(req.query.limit, 1, 100, 50);
+
+    const totalResult = await pool.query(`SELECT COUNT(*)::int AS count FROM tracks;`);
+    const totalPool = Number(totalResult.rows[0]?.count || 0);
+
+    const rowsResult = await pool.query(
+      `
+      SELECT
+        source_id AS id,
+        title,
+        artist,
+        album,
+        stream,
+        cover,
+        page_url,
+        source,
+        is_live,
+        genre,
+        language
+      FROM tracks
+      ORDER BY updated_at DESC, id DESC
+      OFFSET $1
+      LIMIT $2;
+      `,
+      [offset, limit]
+    );
+
+    const tracks = rowsResult.rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      artist: row.artist,
+      album: row.album,
+      stream: row.stream,
+      cover: row.cover,
+      page_url: row.page_url,
+      source: row.source,
+      is_live: row.is_live,
+      genre: row.genre,
+      language: row.language,
+    }));
+
+    const nextOffset = offset + tracks.length < totalPool ? offset + tracks.length : null;
+    const stats = await getStats();
+
+    res.json({
+      total_pool: totalPool,
+      total_returned: tracks.length,
+      offset,
+      limit,
+      next_offset: nextOffset,
+      sources_active: stats.sources_active,
+      tracks,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/search", async (req, res) => {
+  try {
+    await ensureDb();
+
+    const q = safeString(req.query.q || "", 200);
+    const offset = clampInt(req.query.offset, 0, 1_000_000, 0);
+    const limit = clampInt(req.query.limit, 1, 100, 50);
+
+    if (!q) {
+      return res.status(400).json({
+        error: "Missing q parameter",
+        example: "/api/search?q=house&offset=0&limit=50",
+      });
+    }
+
+    const like = `%${q.toLowerCase()}%`;
+
+    const totalResult = await pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM tracks
+      WHERE
+        LOWER(title) LIKE $1 OR
+        LOWER(artist) LIKE $1 OR
+        LOWER(album) LIKE $1 OR
+        LOWER(genre) LIKE $1 OR
+        LOWER(language) LIKE $1;
+      `,
+      [like]
+    );
+
+    const totalPool = Number(totalResult.rows[0]?.count || 0);
+
+    const rowsResult = await pool.query(
+      `
+      SELECT
+        source_id AS id,
+        title,
+        artist,
+        album,
+        stream,
+        cover,
+        page_url,
+        source,
+        is_live,
+        genre,
+        language
+      FROM tracks
+      WHERE
+        LOWER(title) LIKE $1 OR
+        LOWER(artist) LIKE $1 OR
+        LOWER(album) LIKE $1 OR
+        LOWER(genre) LIKE $1 OR
+        LOWER(language) LIKE $1
+      ORDER BY updated_at DESC, id DESC
+      OFFSET $2
+      LIMIT $3;
+      `,
+      [like, offset, limit]
+    );
+
+    const tracks = rowsResult.rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      artist: row.artist,
+      album: row.album,
+      stream: row.stream,
+      cover: row.cover,
+      page_url: row.page_url,
+      source: row.source,
+      is_live: row.is_live,
+      genre: row.genre,
+      language: row.language,
+    }));
+
+    const nextOffset = offset + tracks.length < totalPool ? offset + tracks.length : null;
+    const stats = await getStats();
+
+    res.json({
+      q,
+      total_pool: totalPool,
+      total_returned: tracks.length,
+      offset,
+      limit,
+      next_offset: nextOffset,
+      sources_active: stats.sources_active,
+      tracks,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.use((_req, res) => {
+  res.status(404).json({
+    error: "Not found",
     endpoints: {
-      health: '/api/health',
-      stats: '/api/stats',
-      trending: '/api/trending?offset=0&limit=50',
-      new: '/api/new?offset=0&limit=50',
-      search: '/api/search?q=house&offset=0&limit=50',
-      import_all: '/api/import/all',
-      import_status: '/api/import/status',
+      root: "/",
+      health: "/api/health",
+      stats: "/api/stats",
+      trending: "/api/trending?offset=0&limit=50",
+      search: "/api/search?q=house&offset=0&limit=50",
+      import_all: "/api/import/all",
+      import_audius: "/api/import/audius",
+      import_radio: "/api/import/radio",
+      import_status: "/api/import/status",
     },
   });
 });
 
-app.get('/api/health', async (_req, res) => {
+async function bootstrap() {
   try {
-    const { rows } = await pool.query(`SELECT NOW() AS now;`);
-    res.json({
-      ok: true,
-      db: true,
-      now: rows[0].now,
-    });
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      db: false,
-      error: error.message,
-    });
-  }
-});
-
-app.get('/api/import/status', async (_req, res) => {
-  res.json({
-    ok: true,
-    import: importState,
-  });
-});
-
-app.get('/api/import/all', async (req, res) => {
-  const reset =
-    String(req.query.reset || '').toLowerCase() === '1' ||
-    String(req.query.reset || '').toLowerCase() === 'true';
-
-  if (importState.running) {
-    return res.json({
-      ok: true,
-      started: false,
-      message: 'Import is already running',
-      import: importState,
-    });
-  }
-
-  setTimeout(() => {
-    runFullImport({ reset }).catch((error) => {
-      console.error('Background import error:', error);
-    });
-  }, 0);
-
-  res.json({
-    ok: true,
-    started: true,
-    reset,
-    message: 'Background import started',
-  });
-});
-
-app.get('/api/stats', async (_req, res) => {
-  try {
-    const totalResult = await pool.query(
-      `SELECT COUNT(*)::int AS total_tracks FROM tracks;`
-    );
-
-    const bySourceResult = await pool.query(`
-      SELECT source, COUNT(*)::int AS count
-      FROM tracks
-      GROUP BY source
-      ORDER BY count DESC, source ASC;
-    `);
-
-    const sourcesActive = bySourceResult.rows.map((row) => row.source);
-
-    res.json({
-      total_tracks: totalResult.rows[0]?.total_tracks || 0,
-      by_source: bySourceResult.rows,
-      sources_active: sourcesActive,
-      import: importState,
-    });
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-
-app.get('/api/trending', async (req, res) => {
-  try {
-    const offset = clampInt(req.query.offset, 0, 1000000, 0);
-    const limit = clampInt(req.query.limit, 1, 100, 50);
-    const source = safeText(req.query.source).toLowerCase();
-
-    const filters = [];
-    const values = [];
-
-    if (source) {
-      values.push(source);
-      filters.push(`source = $${values.length}`);
+    if (pool) {
+      await ensureDb();
     }
 
-    const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-
-    const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM tracks ${whereSql};`,
-      values
-    );
-
-    const totalPool = countResult.rows[0]?.total || 0;
-
-    const queryValues = [...values, limit, offset];
-
-    const rowsResult = await pool.query(
-      `
-      SELECT
-        id, title, artist, album, stream, cover, page_url,
-        source, is_live, genre, language
-      FROM tracks
-      ${whereSql}
-      ORDER BY sort_score DESC, updated_at DESC, title ASC
-      LIMIT $${queryValues.length - 1}
-      OFFSET $${queryValues.length};
-      `,
-      queryValues
-    );
-
-    const sourcesActive = await getSourcesActive();
-
-    res.json(
-      buildPagedResponse({
-        totalPool,
-        rows: rowsResult.rows,
-        offset,
-        limit,
-        sourcesActive,
-      })
-    );
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      error: error.message,
+    app.listen(PORT, () => {
+      console.log(`AIMusic API started on port ${PORT}`);
+      console.log(`Available at your primary URL`);
     });
-  }
-});
-
-app.get('/api/new', async (req, res) => {
-  try {
-    const offset = clampInt(req.query.offset, 0, 1000000, 0);
-    const limit = clampInt(req.query.limit, 1, 100, 50);
-    const source = safeText(req.query.source).toLowerCase();
-
-    const filters = [];
-    const values = [];
-
-    if (source) {
-      values.push(source);
-      filters.push(`source = $${values.length}`);
-    }
-
-    const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-
-    const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM tracks ${whereSql};`,
-      values
-    );
-
-    const totalPool = countResult.rows[0]?.total || 0;
-
-    const queryValues = [...values, limit, offset];
-
-    const rowsResult = await pool.query(
-      `
-      SELECT
-        id, title, artist, album, stream, cover, page_url,
-        source, is_live, genre, language
-      FROM tracks
-      ${whereSql}
-      ORDER BY updated_at DESC, sort_score DESC, title ASC
-      LIMIT $${queryValues.length - 1}
-      OFFSET $${queryValues.length};
-      `,
-      queryValues
-    );
-
-    const sourcesActive = await getSourcesActive();
-
-    res.json(
-      buildPagedResponse({
-        totalPool,
-        rows: rowsResult.rows,
-        offset,
-        limit,
-        sourcesActive,
-      })
-    );
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
+    console.error("Bootstrap error:", error);
+    process.exit(1);
   }
-});
-
-app.get('/api/search', async (req, res) => {
-  try {
-    const q = safeText(req.query.q);
-    const source = safeText(req.query.source).toLowerCase();
-    const offset = clampInt(req.query.offset, 0, 1000000, 0);
-    const limit = clampInt(req.query.limit, 1, 100, 50);
-
-    if (!q) {
-      return res.redirect(
-        `/api/trending?offset=${offset}&limit=${limit}${
-          source ? `&source=${encodeURIComponent(source)}` : ''
-        }`
-      );
-    }
-
-    const qLower = q.toLowerCase();
-    const qLike = `%${qLower}%`;
-    const qPrefix = `${qLower}%`;
-
-    const filters = [
-      `(lower(title) LIKE $1 OR lower(artist) LIKE $1 OR lower(album) LIKE $1 OR lower(genre) LIKE $1 OR lower(language) LIKE $1)`,
-    ];
-
-    const baseValues = [qLike];
-
-    if (source) {
-      baseValues.push(source);
-      filters.push(`source = $${baseValues.length}`);
-    }
-
-    const whereSql = `WHERE ${filters.join(' AND ')}`;
-
-    const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM tracks ${whereSql};`,
-      baseValues
-    );
-
-    const totalPool = countResult.rows[0]?.total || 0;
-
-    const values = [
-      ...baseValues,
-      qLower,
-      qLower,
-      qPrefix,
-      qPrefix,
-      limit,
-      offset,
-    ];
-
-    const rowsResult = await pool.query(
-      `
-      SELECT
-        id, title, artist, album, stream, cover, page_url,
-        source, is_live, genre, language
-      FROM tracks
-      ${whereSql}
-      ORDER BY
-        CASE
-          WHEN lower(title) = $${baseValues.length + 1} THEN 0
-          WHEN lower(artist) = $${baseValues.length + 2} THEN 1
-          WHEN lower(title) LIKE $${baseValues.length + 3} THEN 2
-          WHEN lower(artist) LIKE $${baseValues.length + 4} THEN 3
-          ELSE 4
-        END,
-        sort_score DESC,
-        updated_at DESC,
-        title ASC
-      LIMIT $${baseValues.length + 5}
-      OFFSET $${baseValues.length + 6};
-      `,
-      values
-    );
-
-    const sourcesActive = await getSourcesActive();
-
-    res.json(
-      buildPagedResponse({
-        totalPool,
-        rows: rowsResult.rows,
-        offset,
-        limit,
-        sourcesActive,
-      })
-    );
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-
-app.use((error, _req, res, _next) => {
-  console.error(error);
-  res.status(500).json({
-    ok: false,
-    error: error.message || 'Server error',
-  });
-});
-
-async function start() {
-  await initDb();
-
-  app.listen(PORT, () => {
-    console.log(`AIMusic API started on port ${PORT}`);
-    console.log(`Primary URL: ${APP_URL}`);
-  });
 }
 
-start().catch((error) => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
+bootstrap();
