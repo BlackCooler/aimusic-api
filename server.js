@@ -23,14 +23,19 @@ const pool = DATABASE_URL
   : null;
 
 const AUDIOUS_LIMIT = 100;
-const AUDIOUS_MAX_PAGES = Number(process.env.AUDIOUS_MAX_PAGES || 4);
+const AUDIOUS_MAX_PAGES = Number(process.env.AUDIOUS_MAX_PAGES || 6);
 const RADIO_LIMIT = 100;
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 25000);
 const BETWEEN_REQUESTS_MS = Number(process.env.BETWEEN_REQUESTS_MS || 180);
 
 const AUDIOUS_TERMS = [
   "house",
+  "deep house",
+  "melodic house",
+  "progressive house",
+  "afro house",
   "techno",
+  "melodic techno",
   "trance",
   "dance",
   "electronic",
@@ -38,6 +43,7 @@ const AUDIOUS_TERMS = [
   "dubstep",
   "drum and bass",
   "bass music",
+  "future bass",
   "phonk",
   "hip hop",
   "rap",
@@ -50,12 +56,8 @@ const AUDIOUS_TERMS = [
   "ambient",
   "chill",
   "synthwave",
-  "melodic house",
-  "progressive house",
-  "afro house",
   "hardstyle",
   "uk garage",
-  "future bass",
   "reggaeton",
   "latin",
   "k-pop",
@@ -141,7 +143,7 @@ function finishImportState() {
 function logImport(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   importState.logs.push(line);
-  if (importState.logs.length > 100) {
+  if (importState.logs.length > 120) {
     importState.logs.shift();
   }
   console.log(line);
@@ -183,8 +185,8 @@ async function ensureDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tracks (
       id BIGSERIAL PRIMARY KEY,
-      source TEXT NOT NULL,
-      source_id TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT '',
+      source_id TEXT NOT NULL DEFAULT '',
       title TEXT NOT NULL DEFAULT '',
       artist TEXT NOT NULL DEFAULT '',
       album TEXT NOT NULL DEFAULT '',
@@ -195,17 +197,69 @@ async function ensureDb() {
       language TEXT NOT NULL DEFAULT '',
       is_live BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (source, source_id)
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_id TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS artist TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS stream TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS cover TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS page_url TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS genre TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS is_live BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`);
+
+  await pool.query(`
+    UPDATE tracks
+    SET source = 'unknown'
+    WHERE COALESCE(source, '') = '';
+  `);
+
+  await pool.query(`
+    UPDATE tracks
+    SET source_id = CASE
+      WHEN COALESCE(source_id, '') <> '' THEN source_id
+      WHEN source = 'audius' AND id::text LIKE 'audius_%' THEN SUBSTRING(id::text FROM 8)
+      WHEN source = 'radio' AND id::text LIKE 'radio_%' THEN SUBSTRING(id::text FROM 7)
+      WHEN source = 'archive' AND id::text LIKE 'archive_%' THEN SUBSTRING(id::text FROM 9)
+      WHEN COALESCE(stream, '') <> '' THEN md5(stream)
+      WHEN COALESCE(title, '') <> '' OR COALESCE(artist, '') <> '' THEN md5(COALESCE(title, '') || '|' || COALESCE(artist, '') || '|' || COALESCE(source, 'unknown'))
+      ELSE md5(id::text)
+    END
+    WHERE COALESCE(source_id, '') = '';
+  `);
+
+  await pool.query(`
+    UPDATE tracks
+    SET updated_at = NOW()
+    WHERE updated_at IS NULL;
+  `);
+
+  await pool.query(`
+    UPDATE tracks
+    SET created_at = NOW()
+    WHERE created_at IS NULL;
+  `);
+
+  await pool.query(`
+    DELETE FROM tracks a
+    USING tracks b
+    WHERE a.ctid < b.ctid
+      AND COALESCE(a.source, '') = COALESCE(b.source, '')
+      AND COALESCE(a.source_id, '') = COALESCE(b.source_id, '')
+      AND COALESCE(a.source_id, '') <> '';
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_tracks_source_source_id
+    ON tracks(source, source_id);
+  `);
 
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_source ON tracks(source);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_updated_at ON tracks(updated_at DESC);`);
@@ -214,7 +268,7 @@ async function ensureDb() {
 }
 
 function normalizeAudiusTrack(track) {
-  const id = safeString(track.id, 200);
+  const id = safeString(track?.id, 200);
   if (!id) return null;
 
   const artwork =
@@ -368,7 +422,7 @@ async function importAudiusJob() {
   importState.current_step = "audius";
 
   for (const term of AUDIOUS_TERMS) {
-    logImport(`Audius: term="${term}"`);
+    logImport(`Audius term: ${term}`);
 
     for (let page = 0; page < AUDIOUS_MAX_PAGES; page++) {
       const offset = page * AUDIOUS_LIMIT;
@@ -395,7 +449,7 @@ async function importAudiusJob() {
         break;
       }
 
-      let freshInThisPage = 0;
+      let pageAffected = 0;
 
       for (const rawTrack of items) {
         importState.totals.received += 1;
@@ -421,7 +475,7 @@ async function importAudiusJob() {
           const affected = await upsertTrack(normalized);
           importState.totals.affected += affected;
           importState.details.audius.affected += affected;
-          freshInThisPage += affected;
+          pageAffected += affected;
         } catch (error) {
           importState.totals.errors += 1;
           importState.details.audius.errors += 1;
@@ -434,7 +488,7 @@ async function importAudiusJob() {
         break;
       }
 
-      if (freshInThisPage === 0 && page >= 1) {
+      if (pageAffected === 0 && page >= 1) {
         break;
       }
 
@@ -443,7 +497,7 @@ async function importAudiusJob() {
   }
 
   logImport(
-    `Audius done: received=${importState.details.audius.received}, affected=${importState.details.audius.affected}`
+    `Audius done: received=${importState.details.audius.received}, affected=${importState.details.audius.affected}, errors=${importState.details.audius.errors}`
   );
 }
 
@@ -457,7 +511,7 @@ async function importRadioJob() {
       `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(tag)}` +
       `?hidebroken=true&order=votes&reverse=true&limit=${RADIO_LIMIT}`;
 
-    logImport(`Radio tag: "${tag}"`);
+    logImport(`Radio tag: ${tag}`);
 
     let items = [];
     try {
@@ -512,7 +566,7 @@ async function importRadioJob() {
       `https://de1.api.radio-browser.info/json/stations/bycountry/${encodeURIComponent(country)}` +
       `?hidebroken=true&order=votes&reverse=true&limit=${RADIO_LIMIT}`;
 
-    logImport(`Radio country: "${country}"`);
+    logImport(`Radio country: ${country}`);
 
     let items = [];
     try {
@@ -563,7 +617,7 @@ async function importRadioJob() {
   }
 
   logImport(
-    `Radio done: received=${importState.details.radio.received}, affected=${importState.details.radio.affected}`
+    `Radio done: received=${importState.details.radio.received}, affected=${importState.details.radio.affected}, errors=${importState.details.radio.errors}`
   );
 }
 
@@ -613,7 +667,7 @@ function publicImportState() {
     totals: importState.totals,
     details: importState.details,
     last_error: importState.last_error,
-    logs: importState.logs.slice(-20),
+    logs: importState.logs.slice(-25),
   };
 }
 
@@ -755,7 +809,7 @@ app.get("/api/trending", async (req, res) => {
         genre,
         language
       FROM tracks
-      ORDER BY updated_at DESC, id DESC
+      ORDER BY updated_at DESC, created_at DESC, title ASC
       OFFSET $1
       LIMIT $2;
       `,
@@ -847,7 +901,7 @@ app.get("/api/search", async (req, res) => {
         LOWER(album) LIKE $1 OR
         LOWER(genre) LIKE $1 OR
         LOWER(language) LIKE $1
-      ORDER BY updated_at DESC, id DESC
+      ORDER BY updated_at DESC, created_at DESC, title ASC
       OFFSET $2
       LIMIT $3;
       `,
@@ -911,7 +965,6 @@ async function bootstrap() {
 
     app.listen(PORT, () => {
       console.log(`AIMusic API started on port ${PORT}`);
-      console.log(`Available at your primary URL`);
     });
   } catch (error) {
     console.error("Bootstrap error:", error);
