@@ -187,6 +187,7 @@ async function ensureDb() {
       id BIGSERIAL PRIMARY KEY,
       source TEXT NOT NULL DEFAULT '',
       source_id TEXT NOT NULL DEFAULT '',
+      external_id TEXT NOT NULL DEFAULT '',
       title TEXT NOT NULL DEFAULT '',
       artist TEXT NOT NULL DEFAULT '',
       album TEXT NOT NULL DEFAULT '',
@@ -203,6 +204,7 @@ async function ensureDb() {
 
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_id TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS external_id TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS artist TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album TEXT NOT NULL DEFAULT '';`);
@@ -225,14 +227,24 @@ async function ensureDb() {
     UPDATE tracks
     SET source_id = CASE
       WHEN COALESCE(source_id, '') <> '' THEN source_id
-      WHEN source = 'audius' AND id::text LIKE 'audius_%' THEN SUBSTRING(id::text FROM 8)
-      WHEN source = 'radio' AND id::text LIKE 'radio_%' THEN SUBSTRING(id::text FROM 7)
-      WHEN source = 'archive' AND id::text LIKE 'archive_%' THEN SUBSTRING(id::text FROM 9)
+      WHEN COALESCE(external_id, '') <> '' THEN external_id
       WHEN COALESCE(stream, '') <> '' THEN md5(stream)
       WHEN COALESCE(title, '') <> '' OR COALESCE(artist, '') <> '' THEN md5(COALESCE(title, '') || '|' || COALESCE(artist, '') || '|' || COALESCE(source, 'unknown'))
       ELSE md5(id::text)
     END
     WHERE COALESCE(source_id, '') = '';
+  `);
+
+  await pool.query(`
+    UPDATE tracks
+    SET external_id = CASE
+      WHEN COALESCE(external_id, '') <> '' THEN external_id
+      WHEN COALESCE(source_id, '') <> '' THEN source_id
+      WHEN COALESCE(stream, '') <> '' THEN md5(stream)
+      WHEN COALESCE(title, '') <> '' OR COALESCE(artist, '') <> '' THEN md5(COALESCE(title, '') || '|' || COALESCE(artist, '') || '|' || COALESCE(source, 'unknown'))
+      ELSE md5(id::text)
+    END
+    WHERE COALESCE(external_id, '') = '';
   `);
 
   await pool.query(`
@@ -265,6 +277,7 @@ async function ensureDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_updated_at ON tracks(updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tracks_external_id ON tracks(external_id);`);
 }
 
 function normalizeAudiusTrack(track) {
@@ -291,6 +304,7 @@ function normalizeAudiusTrack(track) {
   return {
     source: "audius",
     source_id: id,
+    external_id: id,
     title: safeString(track?.title, 500),
     artist: safeString(artist, 500),
     album: safeString(track?.album_name || "", 500),
@@ -318,6 +332,7 @@ function normalizeRadioTrack(track) {
   return {
     source: "radio",
     source_id: sourceId,
+    external_id: sourceId,
     title,
     artist: safeString(track?.country || track?.countrycode || "", 500),
     album: "",
@@ -338,11 +353,14 @@ async function upsertTrack(track) {
     return 0;
   }
 
+  const externalId = track.external_id || track.source_id;
+
   await pool.query(
     `
     INSERT INTO tracks (
       source,
       source_id,
+      external_id,
       title,
       artist,
       album,
@@ -354,9 +372,10 @@ async function upsertTrack(track) {
       is_live,
       updated_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
     ON CONFLICT (source, source_id)
     DO UPDATE SET
+      external_id = EXCLUDED.external_id,
       title = EXCLUDED.title,
       artist = EXCLUDED.artist,
       album = EXCLUDED.album,
@@ -371,6 +390,7 @@ async function upsertTrack(track) {
     [
       track.source,
       track.source_id,
+      externalId,
       track.title,
       track.artist,
       track.album,
@@ -797,7 +817,7 @@ app.get("/api/trending", async (req, res) => {
     const rowsResult = await pool.query(
       `
       SELECT
-        source_id AS id,
+        COALESCE(NULLIF(source_id, ''), external_id) AS id,
         title,
         artist,
         album,
@@ -883,7 +903,7 @@ app.get("/api/search", async (req, res) => {
     const rowsResult = await pool.query(
       `
       SELECT
-        source_id AS id,
+        COALESCE(NULLIF(source_id, ''), external_id) AS id,
         title,
         artist,
         album,
