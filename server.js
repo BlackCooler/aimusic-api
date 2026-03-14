@@ -22,55 +22,84 @@ const pool = DATABASE_URL
     })
   : null;
 
-const AUDIOUS_LIMIT = 100;
-const AUDIOUS_MAX_PAGES = Number(process.env.AUDIOUS_MAX_PAGES || 6);
-const RADIO_LIMIT = 100;
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 25000);
-const BETWEEN_REQUESTS_MS = Number(process.env.BETWEEN_REQUESTS_MS || 180);
+const BETWEEN_REQUESTS_MS = Number(process.env.BETWEEN_REQUESTS_MS || 120);
+
+const AUDIOUS_LIMIT = Number(process.env.AUDIOUS_LIMIT || 100);
+const AUDIOUS_MAX_PAGES = Number(process.env.AUDIOUS_MAX_PAGES || 20);
+
+const RADIO_LIMIT = Number(process.env.RADIO_LIMIT || 200);
 
 const AUDIOUS_TERMS = [
   "house",
   "deep house",
-  "melodic house",
   "progressive house",
+  "melodic house",
   "afro house",
+  "tech house",
+  "organic house",
+  "electro house",
+  "future house",
+  "bass house",
+  "slap house",
   "techno",
   "melodic techno",
+  "hard techno",
+  "minimal techno",
+  "industrial techno",
   "trance",
+  "progressive trance",
+  "psytrance",
+  "uplifting trance",
   "dance",
   "electronic",
   "edm",
+  "festival",
+  "club",
+  "dj mix",
   "dubstep",
-  "drum and bass",
-  "bass music",
+  "brostep",
   "future bass",
+  "drum and bass",
+  "liquid drum and bass",
+  "neurofunk",
+  "bass music",
   "phonk",
+  "trap",
   "hip hop",
   "rap",
-  "trap",
   "lofi",
-  "jazz",
+  "chill",
+  "ambient",
+  "synthwave",
+  "retrowave",
+  "hardstyle",
+  "uk garage",
+  "garage",
   "pop",
   "rock",
   "indie",
-  "ambient",
-  "chill",
-  "synthwave",
-  "hardstyle",
-  "uk garage",
-  "reggaeton",
+  "jazz",
+  "smooth jazz",
+  "rnb",
+  "soul",
   "latin",
+  "reggaeton",
   "k-pop",
+  "afrobeats",
 ];
 
 const RADIO_TAGS = [
   "house",
   "deep house",
+  "progressive house",
+  "tech house",
   "techno",
   "trance",
   "dance",
   "electronic",
   "edm",
+  "club",
   "dubstep",
   "drum and bass",
   "bass",
@@ -84,6 +113,13 @@ const RADIO_TAGS = [
   "80s",
   "90s",
   "hits",
+  "chillout",
+  "ambient",
+  "lounge",
+  "hardstyle",
+  "reggaeton",
+  "latin",
+  "indie",
 ];
 
 const RADIO_COUNTRIES = [
@@ -94,9 +130,15 @@ const RADIO_COUNTRIES = [
   "Spain",
   "Italy",
   "Netherlands",
+  "Belgium",
   "Poland",
   "Ukraine",
   "Canada",
+  "Brazil",
+  "Mexico",
+  "Argentina",
+  "Australia",
+  "Japan",
 ];
 
 const importState = {
@@ -143,7 +185,7 @@ function finishImportState() {
 function logImport(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   importState.logs.push(line);
-  if (importState.logs.length > 120) {
+  if (importState.logs.length > 200) {
     importState.logs.shift();
   }
   console.log(line);
@@ -159,9 +201,17 @@ function clampInt(value, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function safeString(value, max = 1000) {
+function safeString(value, max = 2000) {
   if (value === null || value === undefined) return "";
   return String(value).trim().slice(0, max);
+}
+
+function makeStableId(source, rawId, stream, title, artist) {
+  const id = safeString(rawId, 500);
+  if (id) return id;
+  const streamValue = safeString(stream, 2000);
+  if (streamValue) return `${source}_${streamValue}`;
+  return `${source}_${safeString(title, 300)}_${safeString(artist, 300)}`;
 }
 
 async function fetchJson(url) {
@@ -192,6 +242,7 @@ async function ensureDb() {
       artist TEXT NOT NULL DEFAULT '',
       album TEXT NOT NULL DEFAULT '',
       stream TEXT NOT NULL DEFAULT '',
+      stream_url TEXT NOT NULL DEFAULT '',
       cover TEXT NOT NULL DEFAULT '',
       page_url TEXT NOT NULL DEFAULT '',
       genre TEXT NOT NULL DEFAULT '',
@@ -209,6 +260,7 @@ async function ensureDb() {
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS artist TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS stream TEXT NOT NULL DEFAULT '';`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS stream_url TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS cover TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS page_url TEXT NOT NULL DEFAULT '';`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS genre TEXT NOT NULL DEFAULT '';`);
@@ -225,10 +277,23 @@ async function ensureDb() {
 
   await pool.query(`
     UPDATE tracks
+    SET stream = COALESCE(NULLIF(stream, ''), NULLIF(stream_url, ''), '')
+    WHERE COALESCE(stream, '') = '';
+  `);
+
+  await pool.query(`
+    UPDATE tracks
+    SET stream_url = COALESCE(NULLIF(stream_url, ''), NULLIF(stream, ''), '')
+    WHERE COALESCE(stream_url, '') = '';
+  `);
+
+  await pool.query(`
+    UPDATE tracks
     SET source_id = CASE
       WHEN COALESCE(source_id, '') <> '' THEN source_id
       WHEN COALESCE(external_id, '') <> '' THEN external_id
       WHEN COALESCE(stream, '') <> '' THEN md5(stream)
+      WHEN COALESCE(stream_url, '') <> '' THEN md5(stream_url)
       WHEN COALESCE(title, '') <> '' OR COALESCE(artist, '') <> '' THEN md5(COALESCE(title, '') || '|' || COALESCE(artist, '') || '|' || COALESCE(source, 'unknown'))
       ELSE md5(id::text)
     END
@@ -241,6 +306,7 @@ async function ensureDb() {
       WHEN COALESCE(external_id, '') <> '' THEN external_id
       WHEN COALESCE(source_id, '') <> '' THEN source_id
       WHEN COALESCE(stream, '') <> '' THEN md5(stream)
+      WHEN COALESCE(stream_url, '') <> '' THEN md5(stream_url)
       WHEN COALESCE(title, '') <> '' OR COALESCE(artist, '') <> '' THEN md5(COALESCE(title, '') || '|' || COALESCE(artist, '') || '|' || COALESCE(source, 'unknown'))
       ELSE md5(id::text)
     END
@@ -281,9 +347,7 @@ async function ensureDb() {
 }
 
 function normalizeAudiusTrack(track) {
-  const id = safeString(track?.id, 200);
-  if (!id) return null;
-
+  const rawId = safeString(track?.id, 300);
   const artwork =
     track?.artwork?.["480x480"] ||
     track?.artwork?.["1000x1000"] ||
@@ -301,14 +365,25 @@ function normalizeAudiusTrack(track) {
     safeString(track?.url, 2000) ||
     "";
 
+  const stream = rawId
+    ? `https://discoveryprovider.audius.co/v1/tracks/${encodeURIComponent(rawId)}/stream`
+    : "";
+
+  const sourceId = makeStableId("audius", rawId, stream, track?.title, artist);
+
+  if (!sourceId || !safeString(track?.title, 500) || !stream) {
+    return null;
+  }
+
   return {
     source: "audius",
-    source_id: id,
-    external_id: id,
+    source_id: sourceId,
+    external_id: sourceId,
     title: safeString(track?.title, 500),
     artist: safeString(artist, 500),
     album: safeString(track?.album_name || "", 500),
-    stream: `https://discoveryprovider.audius.co/v1/tracks/${encodeURIComponent(id)}/stream`,
+    stream,
+    stream_url: stream,
     cover: safeString(artwork, 2000),
     page_url: pageUrl,
     genre: safeString(track?.genre || "", 500),
@@ -318,12 +393,22 @@ function normalizeAudiusTrack(track) {
 }
 
 function normalizeRadioTrack(track) {
-  const sourceId = safeString(
-    track?.stationuuid || track?.changeuuid || track?.url_resolved || track?.url,
-    300
-  );
   const stream = safeString(track?.url_resolved || track?.url, 2000);
   const title = safeString(track?.name || track?.title, 500);
+
+  const rawId =
+    safeString(track?.stationuuid, 300) ||
+    safeString(track?.changeuuid, 300) ||
+    safeString(track?.url_resolved, 500) ||
+    safeString(track?.url, 500);
+
+  const sourceId = makeStableId(
+    "radio",
+    rawId,
+    stream,
+    title,
+    track?.country || track?.countrycode || ""
+  );
 
   if (!sourceId || !stream || !title) {
     return null;
@@ -337,6 +422,7 @@ function normalizeRadioTrack(track) {
     artist: safeString(track?.country || track?.countrycode || "", 500),
     album: "",
     stream,
+    stream_url: stream,
     cover: safeString(track?.favicon || "", 2000),
     page_url: safeString(track?.homepage || "", 2000),
     genre: safeString(track?.tags || "", 1000),
@@ -349,11 +435,23 @@ async function upsertTrack(track) {
   if (!pool) throw new Error("DATABASE_URL is missing");
   if (!track) return 0;
 
-  if (!track.source || !track.source_id || !track.title || !track.stream) {
+  const source = safeString(track.source, 100);
+  const sourceId = safeString(track.source_id, 500);
+  const externalId = safeString(track.external_id || track.source_id, 500);
+  const title = safeString(track.title, 500);
+  const artist = safeString(track.artist, 500);
+  const album = safeString(track.album, 500);
+  const stream = safeString(track.stream || track.stream_url, 2000);
+  const streamUrl = safeString(track.stream_url || track.stream, 2000);
+  const cover = safeString(track.cover, 2000);
+  const pageUrl = safeString(track.page_url, 2000);
+  const genre = safeString(track.genre, 1000);
+  const language = safeString(track.language, 200);
+  const isLive = !!track.is_live;
+
+  if (!source || !sourceId || !title || !stream || !streamUrl) {
     return 0;
   }
-
-  const externalId = track.external_id || track.source_id;
 
   await pool.query(
     `
@@ -365,6 +463,7 @@ async function upsertTrack(track) {
       artist,
       album,
       stream,
+      stream_url,
       cover,
       page_url,
       genre,
@@ -372,7 +471,7 @@ async function upsertTrack(track) {
       is_live,
       updated_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
     ON CONFLICT (source, source_id)
     DO UPDATE SET
       external_id = EXCLUDED.external_id,
@@ -380,6 +479,7 @@ async function upsertTrack(track) {
       artist = EXCLUDED.artist,
       album = EXCLUDED.album,
       stream = EXCLUDED.stream,
+      stream_url = EXCLUDED.stream_url,
       cover = EXCLUDED.cover,
       page_url = EXCLUDED.page_url,
       genre = EXCLUDED.genre,
@@ -388,18 +488,19 @@ async function upsertTrack(track) {
       updated_at = NOW();
     `,
     [
-      track.source,
-      track.source_id,
+      source,
+      sourceId,
       externalId,
-      track.title,
-      track.artist,
-      track.album,
-      track.stream,
-      track.cover,
-      track.page_url,
-      track.genre,
-      track.language,
-      track.is_live,
+      title,
+      artist,
+      album,
+      stream,
+      streamUrl,
+      cover,
+      pageUrl,
+      genre,
+      language,
+      isLive,
     ]
   );
 
@@ -438,7 +539,6 @@ async function getStats() {
 
 async function importAudiusJob() {
   const seen = new Set();
-
   importState.current_step = "audius";
 
   for (const term of AUDIOUS_TERMS) {
@@ -465,9 +565,7 @@ async function importAudiusJob() {
       }
 
       const items = Array.isArray(data?.data) ? data.data : [];
-      if (!items.length) {
-        break;
-      }
+      if (!items.length) break;
 
       let pageAffected = 0;
 
@@ -504,13 +602,8 @@ async function importAudiusJob() {
         }
       }
 
-      if (items.length < AUDIOUS_LIMIT) {
-        break;
-      }
-
-      if (pageAffected === 0 && page >= 1) {
-        break;
-      }
+      if (items.length < AUDIOUS_LIMIT) break;
+      if (pageAffected === 0 && page >= 2) break;
 
       await sleep(BETWEEN_REQUESTS_MS);
     }
@@ -523,7 +616,6 @@ async function importAudiusJob() {
 
 async function importRadioJob() {
   const seen = new Set();
-
   importState.current_step = "radio";
 
   for (const tag of RADIO_TAGS) {
@@ -687,7 +779,7 @@ function publicImportState() {
     totals: importState.totals,
     details: importState.details,
     last_error: importState.last_error,
-    logs: importState.logs.slice(-25),
+    logs: importState.logs.slice(-40),
   };
 }
 
@@ -710,6 +802,11 @@ app.get("/", async (_req, res) => {
         import_audius: "/api/import/audius",
         import_radio: "/api/import/radio",
         import_status: "/api/import/status",
+      },
+      import_tuning: {
+        audius_limit: AUDIOUS_LIMIT,
+        audius_max_pages: AUDIOUS_MAX_PAGES,
+        radio_limit: RADIO_LIMIT,
       },
     });
   } catch (error) {
@@ -817,11 +914,11 @@ app.get("/api/trending", async (req, res) => {
     const rowsResult = await pool.query(
       `
       SELECT
-        COALESCE(NULLIF(source_id, ''), external_id) AS id,
+        COALESCE(NULLIF(source_id, ''), NULLIF(external_id, ''), md5(COALESCE(stream, stream_url, ''))) AS id,
         title,
         artist,
         album,
-        stream,
+        COALESCE(NULLIF(stream, ''), stream_url) AS stream,
         cover,
         page_url,
         source,
@@ -903,11 +1000,11 @@ app.get("/api/search", async (req, res) => {
     const rowsResult = await pool.query(
       `
       SELECT
-        COALESCE(NULLIF(source_id, ''), external_id) AS id,
+        COALESCE(NULLIF(source_id, ''), NULLIF(external_id, ''), md5(COALESCE(stream, stream_url, ''))) AS id,
         title,
         artist,
         album,
-        stream,
+        COALESCE(NULLIF(stream, ''), stream_url) AS stream,
         cover,
         page_url,
         source,
